@@ -29,12 +29,18 @@ A **cache-based Distributed Federated Learning** framework (experimental) for **
 # Project Structure
    ```plaintext
    Cache-DFL/
-   ├── cachedfl/
-   │   ├── __init__.py
+   ├── cache_dfl/
+   │   ├── models/
+   │   ├── aggregation.py
+   │   ├── Cache_algorithm.py
+   │   ├── Cached_DFL_mpi.py
+   │   ├── Cached_DFL_single.py
+   │   ├── data.py
    │   ├── model.py
-   │   ├── trainer.py
-   │   ├── data_loader.py
-   │   └── utils.py
+   │   ├── road_sim.py
+   │   ├── seed_setter.py
+   │   ├── utils.py
+   │   └── utils_cnn.py
    ├── examples/
    │   └── demo.py
    ├── tests/
