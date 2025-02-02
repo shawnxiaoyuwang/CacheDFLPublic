@@ -1,6 +1,6 @@
 # Cache-DFL
 
-A **cache-based Distributed Federated Learning** framework (experimental). This repository explores new strategies for caching and data loading in distributed or federated learning scenarios. The code is **research-grade** and not yet production-ready.
+A **cache-based Distributed Federated Learning** framework (experimental) for **"Decentralized Federated Learning with Model Caching on Mobile Agents."**. This repository explores new strategies for caching and data loading in distributed or federated learning scenarios.
 
 ## Features
 
