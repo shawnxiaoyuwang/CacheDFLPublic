@@ -55,5 +55,7 @@ A **cache-based Distributed Federated Learning** framework (experimental). This 
 
 ## Acknowledgments
 * Xiaoyu Wang, New York University
-* AAAI 2025
-* Extended Version: https://arxiv.org/abs/2408.14001
+* Oral Presentation at AAAI 2025
+* Extended Version:
+  Wang, Xiaoyu, Guojun Xiong, Houwei Cao, Jian Li, and Yong Liu. "Decentralized Federated Learning with Model Caching on Mobile Agents." arXiv preprint arXiv:2408.14001 (2024).
+  https://arxiv.org/abs/2408.14001
