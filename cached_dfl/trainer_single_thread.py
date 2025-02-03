@@ -1,642 +1,757 @@
+# trainer_single_thread.py
 # -*- coding: utf-8 -*-
-"""
-Spyder Editor
 
-This is a temporary script file.
-"""
-
-# import matplotlib.pyplot as plt
-
-# plt.style.use("seaborn-white")
 import argparse
 import random
 import torch
-cuda_available = torch.cuda.is_available()
-print("CUDA Available:", cuda_available)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-from torch import optim
-from tqdm import tqdm
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import torch.multiprocessing as mp
-import time
-import os    
-os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+import os
 import copy
-from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import datetime
+import time
+from sklearn.metrics.pairwise import cosine_similarity
+from torch import optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from tqdm import tqdm
 
-from cache_algorithm import kick_out_timeout_model,kick_out_timeout_model_list,update_model_cache_mixing,update_model_cache_car_to_car_p,prune_cache,update_model_cache_car_to_taxi_p,update_model_cache_taxi_to_taxi_p,update_model_cache_car_to_taxi,update_model_cache_taxi_to_taxi,update_model_cache_distribution, update_model_cache_global,kick_out_timeout_model_cache_info, update_model_cache_fresh,cache_average_process,cache_average_process_fresh,cache_average_process_mixing,update_model_cache,duration_in_future,update_model_cache_only_one,weighted_cache_average_process,update_best_model_cache,cache_average_process_fresh_without_model,update_model_cache_fresh_count, update_model_cache_fresh_v3,cache_average_process_fresh_v3
-from aggregation import average_weights,normal_training_process,average_process,normal_train,subgradient_push_process, weighted_average_process
+# Make sure your environment can handle potential MKL warnings:
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
+
+# Local imports
+from cache_algorithm import (
+    kick_out_timeout_model, kick_out_timeout_model_list, update_model_cache_mixing,
+    update_model_cache_car_to_car_p, prune_cache, update_model_cache_car_to_taxi_p,
+    update_model_cache_taxi_to_taxi_p, update_model_cache_car_to_taxi, update_model_cache_taxi_to_taxi,
+    update_model_cache_distribution, update_model_cache_global, kick_out_timeout_model_cache_info,
+    update_model_cache_fresh, cache_average_process, cache_average_process_fresh,
+    cache_average_process_mixing, update_model_cache, duration_in_future, update_model_cache_only_one,
+    weighted_cache_average_process, update_best_model_cache, cache_average_process_fresh_without_model,
+    update_model_cache_fresh_count, update_model_cache_fresh_v3, cache_average_process_fresh_v3
+)
+from aggregation import (
+    average_weights, normal_training_process, average_process, normal_train,
+    subgradient_push_process, weighted_average_process
+)
 from utils_cnn import test
-from model import get_P_matrix,CNNMnist,Cifar10CnnModel,CNNFashion_Mnist,AlexNet,DNN_harbox
+from model import get_P_matrix, CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, AlexNet, DNN_harbox
 from models import ResNet18
-from data_loader import get_mnist_iid, get_mnist_taxi_area,get_mnist_imbalance,get_mnist_dirichlet,initial_mnist, update_training_subset,get_dataloader_by_indices, initial_training_subset,get_cifar10_iid, get_cifar10_imbalance,get_cifar10_dirichlet,get_fashionmnist_taxi_area,get_fashionmnist_iid, get_fashionmnist_imbalance,get_fashionmnist_dirichlet,get_harbox_iid,get_harbox_imbalance,get_harbox_dirichlet
-from road_sim import generate_roadNet_pair_list_v2, generate_roadNet_pair_list,generate_roadNet_pair_area_list
+from data_loader import (
+    get_mnist_iid, get_mnist_taxi_area, get_mnist_imbalance, get_mnist_dirichlet,
+    initial_mnist, update_training_subset, get_dataloader_by_indices, initial_training_subset,
+    get_cifar10_iid, get_cifar10_imbalance, get_cifar10_dirichlet,
+    get_fashionmnist_taxi_area, get_fashionmnist_iid, get_fashionmnist_imbalance, get_fashionmnist_dirichlet,
+    get_harbox_iid, get_harbox_imbalance, get_harbox_dirichlet
+)
+from road_sim import generate_roadNet_pair_area_list
 import seed_setter
+
+# Set random seeds for reproducibility
 Randomseed = seed_setter.set_seed()
 
-# random_seed = 10086
-# random.seed(random_seed)
-# np.random.seed(random_seed)
+# Check CUDA availability
+cuda_available = torch.cuda.is_available()
+print("CUDA Available:", cuda_available)
+device = torch.device("cuda" if cuda_available else "cpu")
+
 np.set_printoptions(precision=4, suppress=True)
 
-# Create the parser
-parser = argparse.ArgumentParser(description="Configure script parameters and select algorithm")
+# --------------------------------------------------------------------------------
+# ARGUMENT PARSING
+# --------------------------------------------------------------------------------
+parser = argparse.ArgumentParser(description="Single-thread trainer script")
 
-# Add arguments
+# Basic arguments
 parser.add_argument("--suffix", type=str, default="", help="Suffix in the folder")
-parser.add_argument("--note", type=str, default="N/A", help="Special_notes")
-# parser.add_argument("--random_seed", type=int, default=10086, help="Random seed")
-parser.add_argument("--task", type=str, choices=[
-    'mnist', 'fashionmnist', 'cifar10','harbox'], help="Choose dataset task to run")
+parser.add_argument("--note", type=str, default="N/A", help="Special notes")
+parser.add_argument("--task", type=str, choices=['mnist', 'fashionmnist', 'cifar10', 'harbox'],
+                    help="Dataset task to run")
 parser.add_argument("--local_ep", type=int, default=10, help="Number of local epochs")
 parser.add_argument("--lr", type=float, default=0.1, help="Learning rate")
 parser.add_argument("--decay_rate", type=float, default=0.02, help="Decay rate")
-parser.add_argument("--decay_round", type=int, default=200, help="Decay round")
+parser.add_argument("--decay_round", type=int, default=200, help="Round interval to decay LR")
 parser.add_argument("--car_meet_p", type=float, default=1./9, help="Car meet probability")
 parser.add_argument("--alpha_time", type=float, default=0.01, help="Alpha time")
-parser.add_argument("--alpha", type=float, default=0.5, help="Alpha for Dirchlet distribution, lower alpha increases heterogeneity")
-parser.add_argument("--distribution", type=str, choices=[
-    'iid', 'non-iid','dirichlet'], help="Choose data distirbution")
+parser.add_argument("--alpha", type=float, default=0.5, help="Dirichlet alpha for non-iid data")
+parser.add_argument("--distribution", type=str, choices=['iid', 'non-iid', 'dirichlet'],
+                    help="Choose data distribution")
 parser.add_argument("--aggregation_metric", type=str, default="mean", help="Aggregation metric")
 parser.add_argument("--cache_update_metric", type=str, default="mean", help="Cache update metric")
 parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
 parser.add_argument("--sample_size", type=int, default=200, help="Sample size")
-parser.add_argument("--hidden_size", type=int, default=200, help="Hidden size")
+parser.add_argument("--hidden_size", type=int, default=200, help="Hidden layer size (if applicable)")
 parser.add_argument("--num_round", type=int, default=2000, help="Number of rounds")
-parser.add_argument("--early_stop_round", type=int, default=20, help="Number of rounds test accuracy remain unchanged then stop")
+parser.add_argument("--early_stop_round", type=int, default=20,
+                    help="Stop if test accuracy doesn't improve for this many rounds")
 parser.add_argument("--speed", type=float, default=13.59, help="Speed in m/s")
-parser.add_argument("--communication_distance", type=int, default=100, help="Communication distance in meters")
-parser.add_argument("--epoch_time", type=int, default=60, help="Time to finish on epoch in seconds")
-# parser.add_argument("--importance", type=int, default=1, help="Importance")
+parser.add_argument("--communication_distance", type=int, default=100, help="Comm distance in meters")
+parser.add_argument("--epoch_time", type=int, default=60, help="Time to finish one epoch in seconds")
 parser.add_argument("--num_car", type=int, default=100, help="Number of cars")
-parser.add_argument("--lr_factor", type=float, default=0.1, help="Learning rate factor")
-parser.add_argument("--lr_patience", type=int, default=20, help="Learning rate patience")
+parser.add_argument("--lr_factor", type=float, default=0.1, help="ReduceLROnPlateau factor")
+parser.add_argument("--lr_patience", type=int, default=20, help="ReduceLROnPlateau patience")
 parser.add_argument("--cache_size", type=int, default=3, help="Cache size")
-# parser.add_argument("--parallel", action='store_true', help="Enable parallel processing")
-# parser.add_argument('--non-parallel', dest='parallel', action='store_false')
-# parser.set_defaults(parallel=False)
-parser.add_argument("--augment", action='store_true', help="Enable augmentation")
+parser.add_argument("--augment", action='store_true', help="Enable data augmentation")
 parser.add_argument('--no-augment', dest='augment', action='store_false')
 parser.set_defaults(augment=True)
-parser.add_argument("--shards_allocation", nargs='+', type=int, default=[3,2,1,3,2,1,1,4,1,2]*10, help="Shards allocation")
+parser.add_argument("--shards_allocation", nargs='+', type=int,
+                    default=[3,2,1,3,2,1,1,4,1,2]*10, help="Shards allocation for non-iid data")
 parser.add_argument("--County", type=str, default="New York", help="County")
-parser.add_argument('--kick_out', type= int, default = 3, help =  'Threshold to kick out in cache')
-# parser.add_argument("--kick_out", action='store_true', help="Enable kick out")
-# parser.add_argument('--no-kick_out', dest='kick_out', action='store_false')
-# parser.set_defaults(kick_out=True)
+parser.add_argument('--kick_out', type=int, default=3, help='Threshold round to kick out from cache')
 parser.add_argument("--weighted_aggregation", action='store_true', help="Enable weighted aggregation")
 parser.add_argument('--no-weighted_aggregation', dest='weighted_aggregation', action='store_false')
 parser.set_defaults(weighted_aggregation=True)
+
 parser.add_argument("--algorithm", type=str, choices=[
-    'ml', 'cfl', 'dfl','dfl_fair','cache_one',
-    'cache_all', 'fresh', 'fresh_update_fresh_by_dp', 'fresh_count',
-    'fresh_history', 'best_test_cache','test'
-], help="Choose the algorithm to run")
-# Parse arguments
+    'ml', 'cfl', 'dfl', 'dfl_fair', 'cache_one', 'cache_all', 'fresh', 'fresh_update_fresh_by_dp',
+    'fresh_count', 'fresh_history', 'best_test_cache', 'test', 'test_taxi', 'test_taxi_priority'
+], help="Algorithm to run")
+
 args = parser.parse_args()
-task = args.task
-# args.algorithm = 'cfl'
-# Assign values to variables
-local_ep = args.local_ep
-lr = args.lr
-decay_rate = args.decay_rate
-decay_round = args.decay_round
-car_meet_p = args.car_meet_p
-alpha_time = args.alpha_time
-alpha = args.alpha
-distribution = args.distribution
-aggregation_metric = args.aggregation_metric
-cache_update_metric = args.cache_update_metric
-batch_size = args.batch_size
-sample_size = args.sample_size
-hidden_size = args.hidden_size
-num_round = args.num_round
-speed = args.speed
-communication_distance = args.communication_distance
-# importance = args.importance
-early_stop_round = args.early_stop_round
-num_car = args.num_car
-cache_size = args.cache_size
-# parallel = args.parallel
-augment = args.augment
-shards_allocation = args.shards_allocation
-County = args.County
-kick_out = args.kick_out
-# SEED = args.random_seed
-suffix = args.suffix
-special_notes = args.note
+
+
+
+
+
+
+# --------------------------------------------------------------------------------
+# HELPER FUNCTIONS
+# --------------------------------------------------------------------------------
+
 def write_info(write_dir):
+    """
+    Write run configuration info to a text file in write_dir.
+    """
     if not os.path.exists(write_dir):
         os.makedirs(write_dir)
-    with open(write_dir+'/configuration.txt','w') as file:
-        file.write('Special suffix = '+str(suffix)+'\n')
-        file.write('Special Notes: '+str(special_notes)+'\n')
-        file.write('Task: '+str(task)+'\n')
-        file.write('Start time: ' + str(date_time.strftime('%Y-%m-%d %H:%M:%S'))+'\n')
-        file.write('Random Seed = '+str(Randomseed)+'\n')
-        file.write('local_ep = '+str(local_ep)+'\n')
-        file.write('lr = '+str(lr)+'\n')
-        file.write('decay_round = '+str(decay_round)+'\n')
-        file.write('alpha_time = '+str(alpha_time)+'\n')
-        file.write('aggregation_metric = '+str(aggregation_metric)+'\n')
-        file.write('cache_update_metric = '+str( cache_update_metric)+'\n')
-        file.write('batch_size = '+str(batch_size)+'\n')
-        file.write('hidden_size = '+str(hidden_size)+'\n')
-        file.write('lr_factor = '+str(args.lr_factor)+'\n')
-        file.write('lr_patience = '+str(args.lr_patience)+'\n')
-        file.write('num_round = '+str(num_round)+'\n')
-        file.write('num_car = '+str(num_car)+'\n')
-        file.write('epoch time = '+str(args.epoch_time)+'\n')
-        file.write('speed = '+str(speed)+'\n')
-        file.write('communication_distance = '+str(communication_distance)+'\n')
-        file.write('cache_size = '+str(cache_size)+'\n')
-        # file.write('parallel = '+str(parallel)+'\n')
-        file.write('shards_allocation = '+str(shards_allocation)+'\n')
-        file.write('Aggregation weights = '+str(weights)+'\n')
-        file.write('County = '+str(County)+'\n')
-        file.write('kick_out = '+str(kick_out)+'\n')
+    with open(os.path.join(write_dir, 'configuration.txt'), 'w') as file:
+        file.write('Special suffix = ' + str(args.suffix) + '\n')
+        file.write('Special Notes: ' + str(args.note) + '\n')
+        file.write('Task: ' + str(args.task) + '\n')
+        file.write('Start time: ' + str(date_time.strftime('%Y-%m-%d %H:%M:%S')) + '\n')
+        file.write('Random Seed = ' + str(Randomseed) + '\n')
+        file.write('local_ep = ' + str(args.local_ep) + '\n')
+        file.write('lr = ' + str(args.lr) + '\n')
+        file.write('decay_round = ' + str(args.decay_round) + '\n')
+        file.write('alpha_time = ' + str(args.alpha_time) + '\n')
+        file.write('aggregation_metric = ' + str(args.aggregation_metric) + '\n')
+        file.write('cache_update_metric = ' + str(args.cache_update_metric) + '\n')
+        file.write('batch_size = ' + str(args.batch_size) + '\n')
+        file.write('hidden_size = ' + str(args.hidden_size) + '\n')
+        file.write('lr_factor = ' + str(args.lr_factor) + '\n')
+        file.write('lr_patience = ' + str(args.lr_patience) + '\n')
+        file.write('num_round = ' + str(args.num_round) + '\n')
+        file.write('num_car = ' + str(args.num_car) + '\n')
+        file.write('epoch time = ' + str(args.epoch_time) + '\n')
+        file.write('speed = ' + str(args.speed) + '\n')
+        file.write('communication_distance = ' + str(args.communication_distance) + '\n')
+        file.write('cache_size = ' + str(args.cache_size) + '\n')
+        file.write('shards_allocation = ' + str(args.shards_allocation) + '\n')
+        file.write('Aggregation weights = ' + str(weights) + '\n')
+        file.write('County = ' + str(args.County) + '\n')
+        file.write('kick_out = ' + str(args.kick_out) + '\n')
         if distribution != 'by_area':
-            file.write('alpha = '+str(alpha)+'\n')
+            file.write('alpha = ' + str(alpha) + '\n')
             file.write('Data distribution among cars:\n')
-            file.write(str(statistic_data)+'\n')
+            file.write(str(statistic_data) + '\n')
             file.write('Data similarity among cars:\n')
-            file.write(str(data_similarity)+'\n')
-            file.write('Data_points:\n'+str(data_points)+'\n')
+            file.write(str(data_similarity) + '\n')
+            file.write('Data_points:\n' + str(data_points) + '\n')
         else:
-            file.write('This is by area distribution, no statistic data distribution.'+'\n')
-            file.write('Initial data size per car:'+str(initial_size)+'\n')
-            file.write('Max data size per car:'+str(max_size)+'\n')
-            file.write('Update fraction:'+str(update_fraction)+'\n')
-        file.write('mixing table'+str(mixing_table)+'\n')
-        file.write('mixing pair'+str(mixing_pair)+'\n')
-    pair, area = generate_roadNet_pair_area_list(write_dir,num_car, num_round,communication_distance,args.epoch_time,speed,County,10,car_type_list)
-    with open(write_dir+'/pair.txt','w') as file:
+            file.write('This is by_area distribution, no statistic data distribution.\n')
+            file.write('Initial data size per car:' + str(initial_size) + '\n')
+            file.write('Max data size per car:' + str(max_size) + '\n')
+            file.write('Update fraction:' + str(update_fraction) + '\n')
+        file.write('mixing table' + str(mixing_table) + '\n')
+        file.write('mixing pair' + str(mixing_pair) + '\n')
+
+    # Generate pair & area from road network simulation
+    pair, area = generate_roadNet_pair_area_list(
+        write_dir, num_car, num_round, args.communication_distance,
+        args.epoch_time, args.speed, args.County, 10, car_type_list
+    )
+    with open(os.path.join(write_dir, 'pair.txt'), 'w') as file:
         for i in range(num_round):
-            file.write('Round:'+str(i)+': \n')
+            file.write('Round:' + str(i) + ': \n')
             for j in range(args.epoch_time):
-                file.write('Seconds:'+str(j)+': \n')
-                file.write(str(pair[i*args.epoch_time+j])+'\n')
-    with open(write_dir+'/area.txt','w') as file:
+                file.write('Seconds:' + str(j) + ': \n')
+                file.write(str(pair[i*args.epoch_time + j]) + '\n')
+    with open(os.path.join(write_dir, 'area.txt'), 'w') as file:
         for i in range(num_car):
-            file.write('Car:'+str(i)+': ')
-            file.write(str(area[i])+'\n')
+            file.write('Car:' + str(i) + ': ')
+            file.write(str(area[i]) + '\n')
     return pair, area
-            
+
 
 def adjust_learning_rate(optimizer, epoch, initial_lr, decay_rate):
+    """
+    Example learning rate scheduler. Not actively used in main code unless you call it.
+    """
     lr = initial_lr
-    if epoch>0 and epoch % 100 == 0:
-        lr = lr/10
-    # lr = initial_lr / (1 + decay_rate * epoch)
+    if epoch > 0 and epoch % 100 == 0:
+        lr = lr / 10
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
     return lr
 
-def update_learning_rate(i,learning_rate):
-    if i>0 and i % decay_round == 0:
-        learning_rate = learning_rate/10
+
+def update_learning_rate(i, learning_rate):
+    """Helper to manually decay LR every 'decay_round' steps."""
+    if i > 0 and i % decay_round == 0:
+        learning_rate = learning_rate / 10
     return learning_rate
 
+
 def change_learning_rate(optimizer, lr):
+    """Apply a new learning rate to an optimizer."""
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def final_test(model_list, acc_list,class_acc_list):
+
+def final_test(model_list, acc_list, class_acc_list):
+    """
+    Evaluate each model in 'model_list' on the global test_loader,
+    storing accuracy and class-wise accuracy in acc_list & class_acc_list.
+    """
     for i in range(len(model_list)):
-        acc, class_acc = test(model_list[i], test_loader,num_class)
+        acc, class_acc = test(model_list[i], test_loader, num_class)
         acc_list[i].append(acc)
         class_acc_list[i].append(class_acc)
-    
-def final_test_process(model,process_index, result_list = None):
+
+
+def final_test_process(model, process_index, result_list=None):
+    """
+    If you wanted to do parallel tests, you'd store results in result_list.
+    For single-thread, you can ignore or call it inline.
+    """
     result_list[process_index] = test(model, test_loader)
 
+
+# --------------------------------------------------------------------------------
+# FL WORKFLOW FUNCTIONS (Single-threaded)
+# --------------------------------------------------------------------------------
+
 def ml_process(suffix_dir, train_loader,test_loader, num_round,local_ep):
+    """
+    Simple single-process "centralized" ML training:
+      - Train one model on the entire dataset (train_loader).
+      - Evaluate on test_loader after each round.
+    """
     model = copy.deepcopy(global_model)
     acc = []
-    loss = []
+    loss_history = []
     optimizer = optim.SGD(params=model.parameters(), lr=lr)
-    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=args.lr_factor,
+                                  patience=args.lr_patience, verbose=False)
     learning_rate = lr
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir
+    model_dir = './result/{}_{}_{}_{}_ml{}'.format(
+        date_time.strftime('%Y-%m-%d %H_%M_%S'), task, str(Randomseed),
+        args.algorithm, suffix_dir
+    )
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
+
     for i in range(num_round):
-        print('This is the round:',i)
+        print('Round:', i)
         for param_group in optimizer.param_groups:
-            print(param_group['lr'])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
+            print("Current LR =", param_group['lr'])
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write('Round: {}\n'.format(i))
             for param_group in optimizer.param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
+                file.write('Current LR = {}\n'.format(param_group['lr']))
+
         start_time = time.time()
-        #carry out local training
-        for _ in tqdm(range(local_ep),disable=True):
-            loss.append(normal_train(model, optimizer, full_loader))
-        current_acc, class_acc = test(model, test_loader,num_class)
-        acc.append(current_acc) 
+        # Single-process local training
+        for _ in tqdm(range(local_ep), disable=True):
+            loss_val = normal_train(model, optimizer, full_loader)
+            loss_history.append(loss_val)
+
+        current_acc, class_acc = test(model, test_loader, num_class)
+        acc.append(current_acc)
+
         end_time = time.time()
-        print(f'{end_time-start_time} [sec] for this epoch')
-        print('Acc:',current_acc)
-        print('Class acc:',class_acc)
+        print(f'{end_time - start_time:.2f} seconds for this epoch')
+        print('Accuracy:', current_acc)
+        print('Class accuracy:', class_acc)
+
+        # Optional scheduler step
         if use_lr_scheduler:
             scheduler.step(current_acc)
         else:
             learning_rate = update_learning_rate(i, learning_rate)
             change_learning_rate(optimizer, learning_rate)
-        with open(model_dir+'/log.txt','a') as file:
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('Acc:'+str(current_acc)+'\n')
-            file.write('Class acc:'+str(class_acc)+'\n')
-        with open(model_dir+'/acc_'+task+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir+'.txt','a') as file:
-            file.write(str(i)+':'+str(current_acc)+'\n')
-        #write a code to early stop, if test acc remain unchanged for 10 rounds, then stop and return
-        if i>early_stop_round and (abs(np.array(acc[-early_stop_round:])-acc[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
+
+        # Log
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'{end_time - start_time:.2f} seconds for this epoch\n')
+            file.write('Acc: {}\n'.format(current_acc))
+            file.write('Class Acc: {}\n'.format(class_acc))
+        with open(os.path.join(model_dir,
+                  f'acc_{task}_{Randomseed}_{args.algorithm}{suffix_dir}.txt'),
+                  'a') as file:
+            file.write(f'{i}:{current_acc}\n')
+
+        # Early stop if last X rounds' accuracy hasn't improved
+        if i > early_stop_round and (
+           abs(np.array(acc[-early_stop_round:]) - acc[-1]) < 1e-7
+        ).all():
+            print('Early stop at round:', i)
+            with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+                file.write('Early stop at round:{}\n'.format(i))
             break
-    return loss,acc    
+    return loss_history, acc
+
 
 
 def Centralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    model = []
+    """
+    Standard Centralized FL (cooperative):
+      - Each client trains locally -> all models are uploaded -> average -> broadcast back.
+    """
+    model_list = []
     test_acc = []
     class_acc_list = []
-    loss = []
-    optimizer = []
-    scheduler = []
+    loss_list = []
+    optimizer_list = []
+    scheduler_list = []
     learning_rate = lr
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_cfl'+suffix_dir
-    write_info(model_dir)
-    for i in range(num_car):
-        model.append(copy.deepcopy(global_model))
-        model[i].to(device)
-        optimizer.append(optim.SGD(params=model[i].parameters(), lr=lr))
-        scheduler.append(ReduceLROnPlateau(optimizer[i], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False))
-        loss.append([])
+
+    model_dir = './result/{}_{}_{}_{}_cfl{}'.format(
+        date_time.strftime('%Y-%m-%d %H_%M_%S'), task, distribution,
+        Randomseed, suffix_dir
+    )
+    pair, area = write_info(model_dir)
+
+    # Initialize each car's model/optimizer
+    for _ in range(num_car):
+        m = copy.deepcopy(global_model).to(device)
+        opt = optim.SGD(params=m.parameters(), lr=lr)
+        sched = ReduceLROnPlateau(opt, mode='max', factor=args.lr_factor,
+                                  patience=args.lr_patience, verbose=False)
+        model_list.append(m)
+        optimizer_list.append(opt)
+        scheduler_list.append(sched)
+        loss_list.append([])
+
     for i in range(num_round):
-        print('This is the round:',i)
-        for param_group in optimizer[0].param_groups:
-            print(param_group['lr'])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
-            for param_group in optimizer[0].param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
+        print('Round:', i)
+        for param_group in optimizer_list[0].param_groups:
+            print("Current LR =", param_group['lr'])
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write('Round: {}\n'.format(i))
+            for param_group in optimizer_list[0].param_groups:
+                file.write('Current LR = {}\n'.format(param_group['lr']))
+
         start_time = time.time()
-        #carry out local training
-        for index in range(num_car):
-            normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
-        #upload_central and aggregate
-        w = []
-        for index in range(num_car):
-            w.append(copy.deepcopy(model[index].state_dict()))
-        avg_w = average_weights(w,np.array(weights))
-        for index in range(num_car):
-            model[index].load_state_dict(copy.deepcopy(avg_w))
-            model[index].to(device)
-        acc, class_acc = test(model[0], test_loader)
+
+        # Local training on each device
+        for idx in range(num_car):
+            normal_training_process(model_list[idx], optimizer_list[idx],
+                                    train_loader[idx], local_ep, loss_list[idx])
+
+        # Aggregate
+        w = [copy.deepcopy(m.state_dict()) for m in model_list]
+        avg_w = average_weights(w, np.array(weights))
+        for idx in range(num_car):
+            model_list[idx].load_state_dict(copy.deepcopy(avg_w))
+            model_list[idx].to(device)
+
+        # Evaluate on a single "global" model (model_list[0] after averaging)
+        acc, c_acc = test(model_list[0], test_loader)
         test_acc.append(acc)
-        class_acc_list.append(class_acc)
-        print('test acc:',acc)
-        print('class acc:', class_acc)
+        class_acc_list.append(c_acc)
+        print('Test acc:', acc)
+        print('Class acc:', c_acc)
+
         end_time = time.time()
-        print(f'{end_time-start_time} [sec] for this epoch')
+        print(f'{end_time - start_time:.2f} seconds for this round')
+
+        # Adjust LR
         if use_lr_scheduler:
-            for index in range(num_car):
-                scheduler[index].step(acc)
+            for sch in scheduler_list:
+                sch.step(acc)
         else:
             learning_rate = update_learning_rate(i, learning_rate)
-            for index in range(num_car):
-                change_learning_rate(optimizer[index], learning_rate)
-        with open(model_dir+'/log.txt','a') as file:
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('test acc:'+str(acc)+'\n')
-            file.write('class acc:'+str(class_acc)+'\n')
-        #test global model accuracy
-        with open(model_dir+'/average_acc_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir+'.txt','a') as file:
-            file.write(str(i)+':'+str(test_acc[-1])+'\n')
-        #write a code to early stop, if test acc remain unchanged for 10 rounds, then stop and return
-        if i>early_stop_round and (abs(np.array(test_acc[-early_stop_round:])-test_acc[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
+            for opt in optimizer_list:
+                change_learning_rate(opt, learning_rate)
+
+        # Logging
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'{end_time - start_time:.2f} sec for this epoch\n')
+            file.write('Test acc: {}\n'.format(acc))
+            file.write('Class acc: {}\n'.format(c_acc))
+        out_name = f'average_acc_{task}_{distribution}_{Randomseed}_{args.algorithm}{suffix_dir}.txt'
+        with open(os.path.join(model_dir, out_name), 'a') as file:
+            file.write(f'{i}:{acc}\n')
+
+        # Early stop
+        if i > early_stop_round and (
+           abs(np.array(test_acc[-early_stop_round:]) - test_acc[-1]) < 1e-7
+        ).all():
+            print('Early stop at round:', i)
+            with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+                file.write('Early stop at round:{}\n'.format(i))
             break
-    return loss, test_acc , model_dir 
-    
+
+    return loss_list, test_acc, model_dir
+
 def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    model = []
+    """
+    Basic Decentralized FL:
+      - Each car trains locally
+      - Pairwise model exchange/aggregation (graph-based) each round
+    """
+    model_list = []
     acc_global = []
     acc_global_before_aggregation = []
     class_acc_list = []
     class_acc_list_before_aggregation = []
     acc_local = []
-    loss = []
-    optimizer = []
+    loss_list = []
+    optimizer_list = []
     learning_rate = lr
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir
-    pair,area = write_info(model_dir)
+
+    model_dir = './result/{}_{}_{}_{}_{}'.format(
+        date_time.strftime('%Y-%m-%d %H_%M_%S'), task, distribution,
+        Randomseed, args.algorithm + suffix_dir
+    )
+    pair, area = write_info(model_dir)
+
+    # If distribution == 'by_area', we dynamically update data each round
     if distribution == 'by_area':
+        # We'll rebuild train_loader every round
+        global train_dataset
         train_loader = []
         train_indices = []
-        for i in range(num_car):
+        for _ in range(num_car):
             train_indices.append([])
             train_loader.append([])
-    for i in range(num_car):
-        model.append(copy.deepcopy(global_model))
-        model[i].to(device)
-        optimizer.append(optim.SGD(params=model[i].parameters(), lr=learning_rate))
+
+    # Initialize
+    for _ in range(num_car):
+        m = copy.deepcopy(global_model).to(device)
+        opt = optim.SGD(params=m.parameters(), lr=learning_rate)
+        model_list.append(m)
+        optimizer_list.append(opt)
         acc_global.append([])
         acc_global_before_aggregation.append([])
         class_acc_list.append([])
         class_acc_list_before_aggregation.append([])
         acc_local.append([])
-        loss.append([])
+        loss_list.append([])
+
     for i in range(num_round):
-        print('######################################################################')
-        print('This is the round:',i)
-        # print('lr:',learning_rate)
+        print('==================================================================')
+        print('Round:', i)
+
+        # If "by_area", dynamically update training subset
         if distribution == 'by_area':
             if i == 0:
-                for index in range(num_car):
-                    train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
+                for idx in range(num_car):
+                    train_indices[idx] = initial_training_subset(train_dataset, area[idx][i], initial_size)
+                    train_loader[idx] = get_dataloader_by_indices(
+                        train_dataset, train_indices[idx], batch_size
+                    )
             else:
-                for index in range(num_car):
-                    train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-        if i>0 and i % decay_round == 0:
-            learning_rate = learning_rate/10
-        for index in range(num_car):
-            change_learning_rate(optimizer[index], learning_rate)
-        for param_group in optimizer[0].param_groups:
-            print(param_group['lr'])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
-            for param_group in optimizer[0].param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
-        start_time = time.time()
-        #carry out local training
-        for index in range(num_car):
-            normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
+                for idx in range(num_car):
+                    train_indices[idx] = update_training_subset(
+                        train_indices[idx], train_dataset, area[idx][i], max_size, update_fraction
+                    )
+                    train_loader[idx] = get_dataloader_by_indices(
+                        train_dataset, train_indices[idx], batch_size
+                    )
 
-        model_before_aggregation = copy.deepcopy(model)
+        # Decay LR manually
+        if i > 0 and i % decay_round == 0:
+            learning_rate = learning_rate / 10
+        for opt in optimizer_list:
+            change_learning_rate(opt, learning_rate)
+
+        for param_group in optimizer_list[0].param_groups:
+            print("Current LR =", param_group['lr'])
+
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'Round: {i}\n')
+            for param_group in optimizer_list[0].param_groups:
+                file.write('Current LR = {}\n'.format(param_group['lr']))
+
+        start_time = time.time()
+
+        # Local training
+        for idx in range(num_car):
+            normal_training_process(model_list[idx], optimizer_list[idx],
+                                    train_loader[idx], local_ep, loss_list[idx])
+
+        # Evaluate all models BEFORE aggregation
+        model_before_aggregation = copy.deepcopy(model_list)
         final_test(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation)
 
-
-            
-        # do model aggregation
-        for a,b in pair[i]: 
-            weighted_average_process(model[a],model[b],np.array([weights[a],weights[b]]))
-            model[a].to(device)
-            model[b].to(device)
+        # Pairwise model exchange
+        # pair[i] is a list of (a, b) pairs that meet in round i
+        for (a, b) in pair[i]:
+            weighted_average_process(model_list[a], model_list[b],
+                                     np.array([weights[a], weights[b]]))
+            model_list[a].to(device)
+            model_list[b].to(device)
 
         end_time = time.time()
-        
-        final_test(model, acc_global, class_acc_list)
-        print(f'{end_time-start_time} [sec] for this epoch')
+
+        # Evaluate all models AFTER aggregation
+        final_test(model_list, acc_global, class_acc_list)
+
+        print(f'{end_time - start_time:.2f} seconds for this round')
         print('Before/After aggregation acc:')
-        for index in range(num_car):
-            print('car:',index,'---------------------------------------------------------------')
-            print(acc_global_before_aggregation[index][-1],acc_global[index][-1])
-            print(class_acc_list_before_aggregation[index][-1])
-            print(class_acc_list[index][-1])
-            print('Local Cache model version:')
-        print('----------------------------------------------------------------------')
-        print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        print('pair:',pair[i])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('Before/After aggregation acc:'+'\n')
-            for index in range(num_car):
-                file.write('car:'+str(index)+'---------------------------------------------------------------'+'\n')
-                file.write(str(acc_global_before_aggregation[index][-1])+','+str(acc_global[index][-1])+'\n')
-                file.write(str(class_acc_list_before_aggregation[index][-1])+'\n')
-                file.write(str(class_acc_list[index][-1])+'\n')
-                file.write('Local Cache model version:'+'\n')
-            file.write('----------------------------------------------------------------------'+'\n')
-            file.write('Average test acc:'+str(np.average(acc_global,axis=0)[-1])+'\n')
-        
-        with open(model_dir+'/average_acc_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir+'.txt','a') as file:
-            file.write(str(i)+':'+str(np.average(acc_global,axis=0)[-1])+'\n')
-        #early stop, if test acc remain unchanged for 10 rounds, then stop and return
-        if i > early_stop_round and (abs(np.average(acc_global,axis=0)[-early_stop_round:]-np.average(acc_global,axis=0)[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
+        for idx in range(num_car):
+            bef = acc_global_before_aggregation[idx][-1]
+            aft = acc_global[idx][-1]
+            print(f'Car {idx} | {bef:.4f} -> {aft:.4f}')
+            print('Class accuracy before:', class_acc_list_before_aggregation[idx][-1])
+            print('Class accuracy after:', class_acc_list[idx][-1])
+
+        avg_acc = np.average(acc_global, axis=0)[-1]
+        print('Average test acc:', avg_acc)
+        print('Pairs in this round:', pair[i])
+
+        # Logging
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'{end_time - start_time:.2f} sec for this round\n')
+            file.write('Before/After aggregation acc:\n')
+            for idx in range(num_car):
+                file.write(f'Car {idx} ----------------------------------\n')
+                file.write(f'{acc_global_before_aggregation[idx][-1]} -> {acc_global[idx][-1]}\n')
+                file.write(str(class_acc_list_before_aggregation[idx][-1]) + '\n')
+                file.write(str(class_acc_list[idx][-1]) + '\n')
+            file.write('Average test acc:' + str(avg_acc) + '\n')
+
+        fn_name = f'average_acc_{task}_{distribution}_{Randomseed}_{args.algorithm}{suffix_dir}.txt'
+        with open(os.path.join(model_dir, fn_name), 'a') as file:
+            file.write(f'{i}:{avg_acc}\n')
+
+        # Early stop
+        if i > early_stop_round and (
+           abs(np.average(acc_global, axis=0)[-early_stop_round:] - avg_acc) < 1e-7
+        ).all():
+            print('Early stop at round:', i)
+            with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+                file.write('Early stop at round:{}\n'.format(i))
             break
-    return loss,acc_global,class_acc_list, acc_local   , model_dir
+
+    return loss_list, acc_global, class_acc_list, acc_local, model_dir
+
 
 
 def Decentralized_fair_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    model = []
+    """
+    Similar to Decentralized_process, but tries to 'fairly' aggregate
+    by adjusting weights after each interaction.
+    """
+    model_list = []
     acc_global = []
     acc_global_before_aggregation = []
     class_acc_list = []
     class_acc_list_before_aggregation = []
     acc_local = []
-    loss = []
-    optimizer = []
+    loss_list = []
+    optimizer_list = []
     learning_rate = lr
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir
-    pair,area = write_info(model_dir)
-    for i in range(num_car):
-        model.append(copy.deepcopy(global_model))
-        model[i].to(device)
-        optimizer.append(optim.SGD(params=model[i].parameters(), lr=learning_rate))
+
+    model_dir = './result/{}_{}_{}_{}_{}'.format(
+        date_time.strftime('%Y-%m-%d %H_%M_%S'), task, distribution,
+        Randomseed, args.algorithm + suffix_dir
+    )
+    pair, area = write_info(model_dir)
+
+    for _ in range(num_car):
+        m = copy.deepcopy(global_model).to(device)
+        opt = optim.SGD(params=m.parameters(), lr=learning_rate)
+        model_list.append(m)
+        optimizer_list.append(opt)
         acc_global.append([])
         acc_global_before_aggregation.append([])
         class_acc_list.append([])
         class_acc_list_before_aggregation.append([])
         acc_local.append([])
-        loss.append([])
+        loss_list.append([])
+
     for i in range(num_round):
-        print('######################################################################')
-        print('This is the round:',i)
-        # print('lr:',learning_rate)
-        if i>0 and i % decay_round == 0:
-            learning_rate = learning_rate/10
-        for index in range(num_car):
-            change_learning_rate(optimizer[index], learning_rate)
-        for param_group in optimizer[0].param_groups:
-            print(param_group['lr'])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
-            for param_group in optimizer[0].param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
+        print('==================================================================')
+        print('Round:', i)
+        # Manual LR decay
+        if i > 0 and i % decay_round == 0:
+            learning_rate = learning_rate / 10
+        for opt in optimizer_list:
+            change_learning_rate(opt, learning_rate)
+
+        for param_group in optimizer_list[0].param_groups:
+            print("Current LR =", param_group['lr'])
+
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'Round: {i}\n')
+            for param_group in optimizer_list[0].param_groups:
+                file.write('Current LR = {}\n'.format(param_group['lr']))
+
         start_time = time.time()
-        #carry out local training
-        for index in range(num_car):
-            normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
-        
-        model_before_aggregation = copy.deepcopy(model)
+        # Local training
+        for idx in range(num_car):
+            normal_training_process(model_list[idx], optimizer_list[idx],
+                                    train_loader[idx], local_ep, loss_list[idx])
+
+        # Evaluate before aggregating
+        model_before_aggregation = copy.deepcopy(model_list)
         final_test(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation)
 
-
-            
-        # do model aggregation
+        # "Fair" aggregation: dynamically adjust weights
         temp_weights = copy.deepcopy(weights)
-        for a,b in pair[i]: 
-            weighted_average_process(model[a],model[b],np.array([temp_weights[a],temp_weights[b]]))
+        for (a, b) in pair[i]:
+            weighted_average_process(model_list[a], model_list[b],
+                                     np.array([temp_weights[a], temp_weights[b]]))
+            # Increase weights so these two have a bigger say going forward
             temp_weights[a] = temp_weights[a] + temp_weights[b]
             temp_weights[b] = temp_weights[a]
-            model[a].to(device)
-            model[b].to(device)
+            model_list[a].to(device)
+            model_list[b].to(device)
 
+        # Evaluate after
         end_time = time.time()
-        
-        final_test(model, acc_global, class_acc_list)
-        print(f'{end_time-start_time} [sec] for this epoch')
-        print('Before/After aggregation acc:')
-        for index in range(num_car):
-            print('car:',index,'---------------------------------------------------------------')
-            print(acc_global_before_aggregation[index][-1],acc_global[index][-1])
-            print(class_acc_list_before_aggregation[index][-1])
-            print(class_acc_list[index][-1])
-            print('Local Cache model version:')
-        print('----------------------------------------------------------------------')
-        print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        print('pair:',pair[i])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('Before/After aggregation acc:'+'\n')
-            for index in range(num_car):
-                file.write('car:'+str(index)+'---------------------------------------------------------------'+'\n')
-                file.write(str(acc_global_before_aggregation[index][-1])+','+str(acc_global[index][-1])+'\n')
-                file.write(str(class_acc_list_before_aggregation[index][-1])+'\n')
-                file.write(str(class_acc_list[index][-1])+'\n')
-                file.write('Local Cache model version:'+'\n')
-            file.write('----------------------------------------------------------------------'+'\n')
-            file.write('Average test acc:'+str(np.average(acc_global,axis=0)[-1])+'\n')
-        
-        with open(model_dir+'/average_acc_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+suffix_dir+'.txt','a') as file:
-            file.write(str(i)+':'+str(np.average(acc_global,axis=0)[-1])+'\n')
+        final_test(model_list, acc_global, class_acc_list)
 
-        if i > early_stop_round and (abs(np.average(acc_global,axis=0)[-early_stop_round:]-np.average(acc_global,axis=0)[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
+        avg_acc = np.average(acc_global, axis=0)[-1]
+        print(f'{end_time - start_time:.2f} sec for this round')
+        print('Average test acc:', avg_acc)
+
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'{end_time - start_time:.2f} sec for this epoch\n')
+            file.write('Before/After aggregation acc:\n')
+            for idx in range(num_car):
+                bef = acc_global_before_aggregation[idx][-1]
+                aft = acc_global[idx][-1]
+                file.write(f'Car {idx} | {bef} -> {aft}\n')
+            file.write('Average test acc:' + str(avg_acc) + '\n')
+
+        fn_name = f'average_acc_{task}_{distribution}_{Randomseed}_{args.algorithm}{suffix_dir}.txt'
+        with open(os.path.join(model_dir, fn_name), 'a') as file:
+            file.write(f'{i}:{avg_acc}\n')
+
+        # Early stop
+        if i > early_stop_round and (
+           abs(np.average(acc_global, axis=0)[-early_stop_round:] - avg_acc) < 1e-7
+        ).all():
+            print('Early stop at round:', i)
+            with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+                file.write('Early stop at round:{}\n'.format(i))
             break
-    return loss,acc_global,class_acc_list, acc_local   , model_dir
+
+    return loss_list, acc_global, class_acc_list, acc_local, model_dir
  
 
-def Decentralized_Cache_all_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    model = []
+def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
+    """
+    Decentralized FL with a model cache that can hold up to 'cache_size' models for each node.
+    """
+    model_list = []
     local_cache = []
     acc_global = []
-    acc_global_before_aggregation = []
     class_acc_list = []
-    class_acc_list_before_aggregation = []
     acc_local = []
-    loss = []
-    optimizer = []
+    loss_list = []
+    optimizer_list = []
     learning_rate = lr
-    fresh_class_time_table = np.zeros([num_car,num_car])
-    # current_model_time_table = np.zeros(num_car)
-    # current_model_combination_table = np.eye(num_car)#statistic_data#
-    current_class_test = np.zeros([num_car,10])
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+suffix_dir
-    pair,area = write_info(model_dir)
+
+    # Example table if you need freshness metrics, etc.
+    fresh_class_time_table = np.zeros([num_car, num_car])
+    current_class_test = np.zeros([num_car, 10])
+
+    model_dir = './result/{}_{}_{}_{}_{}_{}'.format(
+        date_time.strftime('%Y-%m-%d %H_%M_%S'), task, distribution,
+        Randomseed, args.algorithm, str(cache_size) + suffix_dir
+    )
+    pair, area = write_info(model_dir)
+
+    # Init
     for i in range(num_car):
+        model_list.append(copy.deepcopy(global_model).to(device))
         local_cache.append({})
-        model.append(copy.deepcopy(global_model))
-        model[i].to(device)
-        optimizer.append(optim.SGD(params=model[i].parameters(), lr=lr))
+        optimizer_list.append(optim.SGD(params=model_list[i].parameters(), lr=lr))
         acc_global.append([])
-        acc_global_before_aggregation.append([])
         class_acc_list.append([])
-        class_acc_list_before_aggregation.append([])
         acc_local.append([])
-        loss.append([])
+        loss_list.append([])
+
     for i in range(num_round):
-        # old_model = copy.deepcopy(model)
-        print('######################################################################')
-        print('This is the round:',i)
-        if i>0 and i % decay_round == 0:
-            learning_rate = learning_rate/10
-        for index in range(num_car):
-            change_learning_rate(optimizer[index], learning_rate)
-        for param_group in optimizer[0].param_groups:
-            print(param_group['lr'])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
-            for param_group in optimizer[0].param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
+        print('==================================================================')
+        print('Round:', i)
+
+        # LR decay
+        if i > 0 and i % decay_round == 0:
+            learning_rate = learning_rate / 10
+        for opt in optimizer_list:
+            change_learning_rate(opt, learning_rate)
+
+        for param_group in optimizer_list[0].param_groups:
+            print("Current LR =", param_group['lr'])
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+            file.write(f'Round: {i}\n')
+            for param_group in optimizer_list[0].param_groups:
+                file.write('Current LR = {}\n'.format(param_group['lr']))
+
         start_time = time.time()
-        #carry out local training
+
+        # Local training for each car
         for index in range(num_car):
-            normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
+            normal_training_process(model_list[index], optimizer_list[index],
+                                    train_loader[index], local_ep, loss_list[index])
             fresh_class_time_table[index][index] = i
 
-        model_before_training = copy.deepcopy(model)
+        model_before_training = copy.deepcopy(model_list)
+
+        # Exchange caches over each second in the round
         for seconds in range(args.epoch_time):
-            for a,b in pair[i*args.epoch_time+seconds]: 
-                update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
-        
-        # do model aggregation
-        print('Updated/aggregated model time/combination:')
+            for a, b in pair[i * args.epoch_time + seconds]:
+                update_model_cache(local_cache, model_before_training[a],
+                                   model_before_training[b], a, b, i,
+                                   cache_size, kick_out)
+
+        # After exchanging, do cache-based model aggregation
         for index in range(num_car):
-            model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
-            model[index].to(device)
+            model_list[index] = cache_average_process(model_list[index], index, i,
+                                                      local_cache[index], weights)
+            model_list[index].to(device)
 
-        final_test(model, acc_global, class_acc_list)
-
+        # Evaluate
+        final_test(model_list, acc_global, class_acc_list)
         end_time = time.time()
 
-
-        for index in range(num_car):
-            current_class_test[index] = class_acc_list[index][-1]
-        print(fresh_class_time_table)
-        for index in range(num_car):
-            print(class_acc_list[index][-1])
-        print(f'{end_time-start_time} [sec] for this epoch')
-        print('Before/After aggregation acc:')
-        for index in range(num_car):
-            print('car:',index,'---------------------------------------------------------------')
-            print(acc_global[index][-1])
-            print(class_acc_list[index][-1])
-            print('Local Cache model version:')
-            for key in local_cache[index]:
-                print(key,local_cache[index][key]['time'])#,local_cache[index][key]['fresh_metric'])
-        print('----------------------------------------------------------------------')
-        print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        print('pair:',pair[i])
-        with open(model_dir+'/log.txt','a') as file:
+        # Logging / prints
+        avg_acc = np.average(acc_global, axis=0)[-1]
+        print(f'{end_time - start_time:.2f} seconds for this round')
+        print('Average test acc:', avg_acc)
+        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
             file.write('fresh_class_time_table\n')
-            file.write(str(fresh_class_time_table)+'\n')
-            for index in range(num_car):
-                file.write(str(index)+':'+str(class_acc_list[index][-1])+'\n')
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('Before/After aggregation acc:'+'\n')
-            for index in range(num_car):
-                file.write('car:'+str(index)+'---------------------------------------------------------------'+'\n')
-                file.write(str(acc_global[index][-1])+'\n')
-                # file.write(str(class_acc_list_before_aggregation[index][-1])+'\n')
-                file.write(str(class_acc_list[index][-1])+'\n')
-                file.write('Local Cache model version:'+'\n')
-                for key in local_cache[index]:
-                    file.write(str(key)+':'+str(local_cache[index][key]['time'])+'\n')#,local_cache[index][key]['fresh_metric'])
-            file.write('----------------------------------------------------------------------'+'\n')
-            file.write('Average test acc:'+str(np.average(acc_global,axis=0)[-1])+'\n')
+            file.write(str(fresh_class_time_table) + '\n')
+            for idx in range(num_car):
+                file.write(f'{idx}:{class_acc_list[idx][-1]}\n')
+            file.write(f'{end_time - start_time:.2f} sec this round\n')
+            file.write('Average test acc:' + str(avg_acc) + '\n')
 
-        
-        with open(model_dir+'/average_acc_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+suffix_dir+'.txt','a') as file:
-            file.write(str(i)+':'+str(np.average(acc_global,axis=0)[-1])+'\n')
-        #early stop, if test acc remain unchanged for 10 rounds, then stop and return
-        if i>early_stop_round and (abs(np.average(acc_global,axis=0)[-early_stop_round:]-np.average(acc_global,axis=0)[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
+        fn_name = f'average_acc_{task}_{distribution}_{Randomseed}_{args.algorithm}_{cache_size}{suffix_dir}.txt'
+        with open(os.path.join(model_dir, fn_name), 'a') as file:
+            file.write(f'{i}:{avg_acc}\n')
+
+        # Early stop
+        if i > early_stop_round and (
+           abs(np.average(acc_global, axis=0)[-early_stop_round:] - avg_acc) < 1e-7
+        ).all():
+            print('Early stop at round:', i)
+            with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
+                file.write('Early stop at round:{}\n'.format(i))
             break
-        
-        
-        
-     
-    return loss,acc_global,class_acc_list, acc_local, model_dir 
+
+    return loss_list, acc_global, class_acc_list, acc_local, model_dir
 
 
 def Decentralized_Cache_test_taxi():
+    """
+    Example test for taxi scenario. Simplified, no real training loop—just demonstrates
+    how you might do repeated rounds of local training & cache updates in one thread.
+    """
     model = []
     local_cache = []
     acc_global = []
@@ -830,6 +945,9 @@ def Decentralized_Cache_test_taxi():
     return loss,[0,0,0],class_acc_list, acc_local 
 
 def Decentralized_Cache_test_taxi_priority():
+    """
+    Another scenario test. Single-thread approach (no mp).
+    """
     model = []
     local_cache = []
     acc_global = []
@@ -917,6 +1035,9 @@ def Decentralized_Cache_test_taxi_priority():
     return loss,[0,0,0],class_acc_list, acc_local 
 
 def Decentralized_Cache_test():
+    """
+    Another test function that loops but doesn't do real multi-threading.
+    """
     model = []
     local_cache = []
     acc_global = []
@@ -978,8 +1099,44 @@ def Decentralized_Cache_test():
 
     return loss,[0,0,0],class_acc_list, acc_local 
 
+# --------------------------------------------------------------------------------
+# MAIN SCRIPT
+# --------------------------------------------------------------------------------
 
 if __name__ == '__main__':
+    # Expose some parsed arguments as simpler variables
+    task = args.task
+    distribution = args.distribution
+    local_ep = args.local_ep
+    lr = args.lr
+    decay_round = args.decay_round
+    alpha = args.alpha
+    batch_size = args.batch_size
+    num_round = args.num_round
+    early_stop_round = args.early_stop_round
+    num_car = args.num_car
+    cache_size = args.cache_size
+    kick_out = (args.kick_out is not None and args.kick_out > 0)
+    data_distribution = distribution
+    use_lr_scheduler = True  # If you want the ReduceLROnPlateau or manual decay
+    date_time = datetime.datetime.now()
+    alpha_time = args.alpha_time  # Just to keep consistent with your code
+
+
+    decay_rate = args.decay_rate
+    car_meet_p = args.car_meet_p
+    aggregation_metric = args.aggregation_metric
+    cache_update_metric = args.cache_update_metric
+    sample_size = args.sample_size
+    hidden_size = args.hidden_size
+    speed = args.speed
+    communication_distance = args.communication_distance
+    shards_allocation = args.shards_allocation
+    County = args.County
+    suffix = args.suffix
+    special_notes = args.note
+
+
     task = 'fashionmnist'
     distribution = 'taxi_area'
     args.algorithm = 'test_taxi_priority'
@@ -999,6 +1156,8 @@ if __name__ == '__main__':
     test_ratio = 0.1
     use_lr_scheduler = True
     data_distribution = distribution
+
+    # If some tasks require typed lists for car_type_list, etc.:
     car_type_list =  [0]*num_car
     type_limits_taxi = {'1':4,'2':3,'3':3}
     type_limits_car = {'1':4,'2':3,'3':3}
@@ -1006,199 +1165,222 @@ if __name__ == '__main__':
     target_labels = [[9,0,1,2],[3,4,5,6],[6,7,8,9]]
     # target_labels = [[7,8,9,0,1,2,3],[1,2,3,4,5,6],[4,5,6,7,8,9]]
     # type_limits_car = {'taxi':5,'car':5}
-    if args.algorithm == 'ml':
-        distribution = 'iid'
+
+    # Basic assumption for test splits
+    test_ratio = 0.1
+
+    # Pick or build the global model
     if task == 'mnist':
-        hidden_size = 64
-        global_model = CNNMnist(1,10)
+        global_model = CNNMnist(1, 10)
         num_class = 10
-        #MNIST
+        # Load data
         if distribution == 'iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_iid(num_car,batch_size, test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_mnist_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_imbalance(shards_allocation, num_car, batch_size, test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_mnist_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_dirichlet(alpha, num_car,batch_size, test_ratio)
-            data_distribution = data_distribution+'_'+str(alpha)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_mnist_dirichlet(alpha, num_car, batch_size, test_ratio)
+            data_distribution += f'_{alpha}'
         elif distribution == 'by_area':
-            train_dataset, sub_test_loader, test_loader, full_loader =  initial_mnist(batch_size, test_ratio)
-            initial_size = int(len(train_dataset)/num_car)
-            max_size = int(len(train_dataset)/num_car)
+            train_dataset, sub_test_loader, test_loader, full_loader = \
+                initial_mnist(batch_size, test_ratio)
+            initial_size = int(len(train_dataset) / num_car)
+            max_size = int(len(train_dataset) / num_car)
             update_fraction = 0.1
         elif distribution == 'taxi_area':
-                car_type_list = []
-                car_type_list += [1]*30
-                car_type_list += [0]*4
-                car_type_list += [2]*30
-                car_type_list += [0]*3
-                car_type_list += [3]*30
-                car_type_list += [0]*3
-                # num_car -= 10 
-                car_area_list = []
-                car_area_list += [1]*34
-                car_area_list += [2]*33
-                car_area_list += [3]*33
-                train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_taxi_area(shards_allocation,  batch_size,test_ratio,car_area_list,target_labels)
+            # Example usage
+            car_area_list = [1]*34 + [2]*33 + [3]*33  # total 100
+            # Shards or target labels example:
+            target_labels = [[9, 0, 1, 2], [3, 4, 5, 6], [6, 7, 8, 9]]
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_mnist_taxi_area(args.shards_allocation, batch_size, test_ratio,
+                                    car_area_list, target_labels)
         else:
-            raise ValueError('Error')
+            raise ValueError('Unsupported MNIST distribution')
+
     elif task == 'cifar10':
         # global_model = Cifar10CnnModel()
+        # or:
         # global_model = AlexNet(10)
         global_model = ResNet18()
         num_class = 10
-        # cifar10
         if distribution == 'iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_iid(num_car,batch_size,test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_cifar10_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_imbalance(shards_allocation, num_car, batch_size,test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_cifar10_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_dirichlet(alpha, num_car,batch_size,test_ratio)
-            data_distribution = data_distribution+'_'+str(alpha)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_cifar10_dirichlet(alpha, num_car, batch_size, test_ratio)
+            data_distribution += f'_{alpha}'
         else:
-            raise ValueError('Error')
+            raise ValueError('Unsupported CIFAR-10 distribution')
+
     elif task == 'fashionmnist':
         global_model = CNNFashion_Mnist()
         num_class = 10
-        # FashionMNIST
-        # train_loader, test_loader, full_loader =  get_fashionmnist_dataset_iid(shards_per_user, num_car)
         if distribution == 'iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_iid(num_car,batch_size, test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_fashionmnist_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_imbalance(shards_allocation, num_car, batch_size, test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_fashionmnist_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_dirichlet(alpha, num_car,batch_size, test_ratio)
-            data_distribution = data_distribution+'_'+str(alpha)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_fashionmnist_dirichlet(alpha, num_car, batch_size, test_ratio)
+            data_distribution += f'_{alpha}'
         elif distribution == 'taxi_area':
-                car_type_list = []
-                car_type_list += [1]*30
-                car_type_list += [0]*4
-                car_type_list += [2]*30
-                car_type_list += [0]*3
-                car_type_list += [3]*30
-                car_type_list += [0]*3
-                # num_car -= 10 
-                car_area_list = []
-                car_area_list += [1]*34
-                car_area_list += [2]*33
-                car_area_list += [3]*33
-                train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_taxi_area(shards_allocation,  batch_size,test_ratio,car_area_list,target_labels)
+            # Example usage
+            car_area_list = [1]*34 + [2]*33 + [3]*33
+            target_labels = [[9, 0, 1, 2], [3, 4, 5, 6], [6, 7, 8, 9]]
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_fashionmnist_taxi_area(args.shards_allocation, batch_size,
+                                           test_ratio, car_area_list, target_labels)
         else:
-            raise ValueError('Error')
+            raise ValueError('Unsupported FashionMNIST distribution')
+
     elif task == 'harbox':
         global_model = DNN_harbox()
         num_class = 5
-        # HARBox
         if distribution == 'iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_harbox_iid(num_car,batch_size, test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_harbox_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_harbox_imbalance(shards_allocation, num_car, batch_size, test_ratio)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_harbox_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
-            train_loader, sub_test_loader, test_loader, full_loader =  get_harbox_dirichlet(alpha, num_car,batch_size, test_ratio)
-            data_distribution = data_distribution+'_'+str(alpha)
+            train_loader, sub_test_loader, test_loader, full_loader = \
+                get_harbox_dirichlet(alpha, num_car, batch_size, test_ratio)
+            data_distribution += f'_{alpha}'
         else:
-            raise ValueError('Error')
+            raise ValueError('Unsupported HARBox distribution')
+
     else:
-            raise ValueError('Error')
-    print(len(sub_test_loader.dataset))
-    print(len(test_loader.dataset))
-    
-    
-   
-    
-    # global_model.to(device)
-    #statistic data distribution
+        raise ValueError('Error: task must be mnist, cifar10, fashionmnist, or harbox')
+
+    global_model.to(device)
+
+    # --------------------------------------------------------------------------------
+    # Prepare data statistics if not by_area
+    # --------------------------------------------------------------------------------
     if distribution == 'by_area':
-        print('This is by area distribution, no statistic data distribution.')
-        print('Initial data size per car:',initial_size)
-        print('Max data size per car:',max_size)
-        print('Update fraction:',update_fraction)
+        print('Using by_area distribution. No direct data statistic is recorded.')
+        print('Initial size =', initial_size)
+        print('Max size =', max_size)
+        print('Update fraction =', update_fraction)
         weights = [1]*num_car
     else:
-        statistic_data = np.zeros([num_car,num_class])
+        statistic_data = np.zeros([num_car, num_class])
         for i in range(num_car):
-            for input, target in train_loader[i]:
-                for item in target:
-                    statistic_data[i][item] += 1
+            for _, target in train_loader[i]:
+                for t in target:
+                    statistic_data[i][t] += 1
         print('Data distribution among cars:')
         print(statistic_data)
         max_std = np.zeros(num_car)
         for i in range(num_car):
             for j in range(num_car):
-                if max_std[i] < np.var(statistic_data[i]- statistic_data[j]):
-                    max_std[i] = np.var(statistic_data[i]- statistic_data[j])
-        data_points = np.sum(statistic_data,axis = 1)
-        print(sum(data_points))
-        print(data_points/sum(np.array(data_points)))
-        if args.weighted_aggregation == True:
+                var_ij = np.var(statistic_data[i] - statistic_data[j])
+                if var_ij > max_std[i]:
+                    max_std[i] = var_ij
+        data_points = np.sum(statistic_data, axis=1)
+        print("Total Data Points:", sum(data_points))
+        print("Data points fraction per car:", data_points / sum(np.array(data_points)))
+        if args.weighted_aggregation:
             weights = data_points
         else:
-            weights = [1]*num_car    
+            weights = [1]*num_car
+
         data_similarity = cosine_similarity(statistic_data)
+        print("Data similarity (cosine):")
         print(data_similarity)
-    
+
+    # For mixing_table usage in certain caching scenarios:
     numbers = list(range(num_car))
     random.shuffle(numbers)
-    mixing_pair = []
-    mixing_table = []
-    for i in range(cache_size):
-        mixing_pair.append([])
-    for i in range(num_car):
-        mixing_pair[i%cache_size].append(numbers[i])
-        mixing_table.append([])
+    mixing_pair = [[] for _ in range(cache_size)]
+    mixing_table = [[] for _ in range(num_car)]
+    for i, val in enumerate(numbers):
+        mixing_pair[i % cache_size].append(val)
     for slot in range(cache_size):
         for key in mixing_pair[slot]:
             mixing_table[key] = slot
-    print('mixing table',mixing_table)
-    print('mixing pair',mixing_pair)
-    
-    numbers = list(range(num_car))
-    pair = []
-    
-    
-    # use road sim to generate car pairings.
 
+    print('Mixing table:', mixing_table)
+    print('Mixing pair:', mixing_pair)
+
+    # --------------------------------------------------------------------------------
+    # MAIN EXECUTION: choose the algorithm
+    # --------------------------------------------------------------------------------
     start_time = time.time()
-    date_time = datetime.datetime.fromtimestamp(start_time)
-    # Use the algorithm argument to run the corresponding function
+
     if args.algorithm == 'ml':
-        loss, acc = ml_process(suffix, train_loader,test_loader,num_round,local_ep)
+        # Single-model approach
+        loss_vals, acc_vals = ml_process(args.suffix, train_loader, test_loader, num_round, local_ep)
+        print("Final accuracy array:", acc_vals)
+
     elif args.algorithm == 'cfl':
-        fl_loss, fl_test_acc, model_dir = Centralized_process(suffix,train_loader,test_loader,num_round,local_ep)
+        fl_loss, fl_test_acc, model_dir = Centralized_process(
+            args.suffix, train_loader, test_loader, num_round, local_ep
+        )
+        print("Final FL test acc array:", fl_test_acc)
+
     elif args.algorithm == 'dfl':
-        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_process(suffix,train_loader,test_loader,num_round,local_ep)
+        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_process(
+            args.suffix, train_loader, test_loader, num_round, local_ep
+        )
+        # Print average accuracy across all cars
+        final_avg_acc = np.average(dfl_acc_global, axis=0)
+        print("DFL average accuracy:", final_avg_acc)
+
     elif args.algorithm == 'dfl_fair':
-            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_fair_process(suffix,train_loader,test_loader,num_round,local_ep)
+        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_fair_process(
+            args.suffix, train_loader, test_loader, num_round, local_ep
+        )
+        print("DFL fair average accuracy:", np.average(dfl_acc_global, axis=0))
+
     elif args.algorithm == 'cache_all':
-        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_process(suffix,train_loader,test_loader,num_round,local_ep)
+        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_process(
+            args.suffix, train_loader, test_loader, num_round, local_ep
+        )
+        final_avg_acc = np.average(dfl_acc_global, axis=0)
+        print("cache_all average accuracy:", final_avg_acc)
+
     elif args.algorithm == 'test':
+        # Example placeholder
         dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test()
+        print("Test Mode - dfl_acc_global:", dfl_acc_global)
+
     elif args.algorithm == 'test_taxi':
         dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test_taxi()
+        print("Test Taxi Mode - dfl_acc_global:", dfl_acc_global)
+
     elif args.algorithm == 'test_taxi_priority':
         dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test_taxi_priority()
+        print("Test Taxi Priority - dfl_acc_global:", dfl_acc_global)
+
     else:
-        raise ValueError('Error')
-    if args.algorithm == 'ml':
-        print(acc)
-    elif args.algorithm == 'cfl':
-        print(fl_test_acc)
-    elif args.algorithm != 'test':
-        print(np.average(dfl_acc_global,axis=0))
-        end_time = time.time()
-        total_training_time = end_time-start_time
-        hours, remainder = divmod(total_training_time, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        with open(model_dir+'/summary.txt','w') as file:
-            file.write('Start time: ' + str(date_time.strftime('%Y-%m-%d %H:%M:%S'))+'\n')
-            date_time = datetime.datetime.fromtimestamp(end_time)
-            file.write('End time: ' + str(date_time.strftime('%Y-%m-%d %H:%M:%S'))+'\n')
-            file.write(f'Total training time: {int(hours)} hours, {int(minutes)} minutes, {seconds:.2f} seconds \n')
-            for i in range(num_car):
-                file.write('This is car '+str(i)+'\n')
-                file.write(str(dfl_acc_global[i])+'\n')
-            file.write('This is the average acc:\n')
-            file.write(str(np.average(dfl_acc_global,axis=0))+'\n')
-        print(f"Total training time: {int(hours)} hours, {int(minutes)} minutes, {seconds:.2f} seconds")
+        raise ValueError("Unknown algorithm choice.")
+
+    end_time = time.time()
+    total_training_time = end_time - start_time
+    hours, remainder = divmod(total_training_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    print(f"Total training time: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
+
+    # If we used a real model_dir in some approaches, you can store final summary:
+    # (Below lines show the pattern—uncomment or modify as desired if your algorithm sets model_dir)
+    #
+    # with open(os.path.join(model_dir, 'summary.txt'), 'w') as file:
+    #     file.write('Start time: ' + str(date_time.strftime('%Y-%m-%d %H:%M:%S')) + '\n')
+    #     date_time_end = datetime.datetime.fromtimestamp(end_time)
+    #     file.write('End time: ' + str(date_time_end.strftime('%Y-%m-%d %H:%M:%S')) + '\n')
+    #     file.write(f'Total training time: {int(hours)}h {int(minutes)}m {seconds:.2f}s\n')
+    #     # Optionally log final accuracy across cars for the DFL variants, etc.
      
     
     
