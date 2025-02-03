@@ -93,9 +93,7 @@ parser.add_argument("--weighted_aggregation", action='store_true', help="Enable 
 parser.add_argument('--no-weighted_aggregation', dest='weighted_aggregation', action='store_false')
 parser.set_defaults(weighted_aggregation=True)
 parser.add_argument("--algorithm", type=str, choices=[
-    'ml', 'cfl', 'dfl','dfl_fair','cache_one','cache_plus','cache_mixing',
-    'cache_all', 'cache_balance', 'fresh', 'fresh_update_fresh_by_dp', 'fresh_count',
-    'fresh_history', 'best_test_cache','cache_random','cache_without_taxi','cache_with_taxi','cache_with_taxi_priority'
+    'ml', 'cfl', 'dfl', 'cache', 'cache_areas_LRU','cache_areas_GB'
 ], help="Choose the algorithm to run")
 # Parse arguments
 args = parser.parse_args()
@@ -635,150 +633,7 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
             break
     return loss,acc_global,class_acc_list, acc_local, model_dir
  
-def Decentralized_fair_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    model = []
-    acc_global = []
-    acc_global_before_aggregation = []
-    class_acc_list = []
-    class_acc_list_before_aggregation = []
-    acc_local = []
-    loss = []
-    optimizer = {}
-    scheduler = {}
-    learning_rate = lr
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_epoch_time_'+str(args.epoch_time)+suffix_dir
-    pair = write_info(model_dir)
-    for i in range(1,size):
-        comm.send(model_dir, dest=i, tag=7)
-        
-    # Distribute model to all clients 
-    for i in range(num_car):
-        model.append(copy.deepcopy(global_model))
-        # optimizer.append([])
-        acc_global.append([])
-        acc_global_before_aggregation.append([])
-        class_acc_list.append([])
-        class_acc_list_before_aggregation.append([])
-        acc_local.append([])
-        loss.append([])
-    if mpi_train:
-        for j in client_rank_mapping[0]:
-            optimizer[j] = optim.SGD(params=model[j].parameters(), lr=learning_rate)
-            scheduler[j] = ReduceLROnPlateau(optimizer[j], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
-    else:
-        for index in range(num_car):
-            optimizer[index] = optim.SGD(params=model[index].parameters(), lr=learning_rate)
-            scheduler[index] = ReduceLROnPlateau(optimizer[index], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
-    # mpi_send_model_host(model)
-    for i in range(num_round):
-        print('######################################################################')
-        print('This is the round:',i)
-        # print('lr:',learning_rate)
-        for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
-            print(param_group['lr'])
-        # if i %300== 0:
-        #     learning_rate  = learning_rate/5
-        #     for index in range(num_car):
-        #         for param_group in optimizer[index].param_groups:
-        #             param_group['lr'] = learning_rate
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
-            for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
-        start_time = time.time()
-        #carry out mpi training
-        if mpi_train:
-            mpi_train_host(model,optimizer,train_loader,local_ep,loss,model_dir)
-        else:
-            for index in range(num_car):
-                normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
-            time_2 = time.time()
-            print('Host training time:'+str(time_2-start_time))
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('Host training time:'+str(time_2-start_time)+'\n')
-        
-                
-        # model_before_aggregation = copy.deepcopy(model)
-        
-        # mpi_test_host(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation,False,model_dir)
-
-            
-        # do model aggregation
-        time_a = time.time()
-        temp_weights = copy.deepcopy(weights)
-        for a,b in pair[i]: 
-            weighted_average_process(model[a],model[b],np.array([temp_weights[a],temp_weights[b]]))
-            temp_weights[a] = temp_weights[a] + temp_weights[b]
-            temp_weights[b] = temp_weights[a]
-            model[a].to(device)
-            model[b].to(device)
-        # for a,b in pair[i]: 
-        #     weighted_average_process(model[a],model[b],np.array([weights[a],weights[b]]))
-        time_b = time.time()
-        print('Aggregation time:',time_b-time_a)
-        
-        mpi_test_host(model, acc_global, class_acc_list,True,model_dir)
-        if use_lr_scheduler:
-            if mpi_train:
-                for index in range(1,size):
-                    comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
-                for j in client_rank_mapping[0]:
-                    scheduler[j].step(np.average(acc_global,axis=0)[-1])
-            else:
-                for index in range(num_car):
-                    scheduler[index].step(np.average(acc_global,axis=0)[-1])
-        else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                if mpi_train:
-                    for j in client_rank_mapping[0]:
-                        change_learning_rate(optimizer[j], learning_rate)
-                else:
-                    for index in range(num_car):
-                        change_learning_rate(optimizer[index], learning_rate)
-        end_time = time.time()
-        print('mpi_test time:',end_time-time_b)
-        print(f'{end_time-start_time} [sec] for this epoch')
-        # print('Before/After aggregation acc:')
-        # for index in range(num_car):
-        #     print('car:',index,'---------------------------------------------------------------')
-        #     print(acc_global_before_aggregation[index][-1],acc_global[index][-1])
-        #     print(class_acc_list_before_aggregation[index][-1])
-        #     print(class_acc_list[index][-1])
-        #     print('Local Cache model version:')
-        print('----------------------------------------------------------------------')
-        print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        print('Variance test acc:',np.var(acc_global,axis=0)[-1])
-        print('pair:',pair[i])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('aggregation time:'+str(time_b-time_a)+'\n')
-            file.write('mpi_test time:'+str(end_time-time_b)+'\n')
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('Before/After aggregation acc:'+'\n')
-            for index in range(num_car):
-                file.write('car:'+str(index)+'---------------------------------------------------------------'+'\n')
-                file.write(str(acc_global[index][-1])+'\n')
-                # file.write(str(acc_global_before_aggregation[index][-1])+','+str(acc_global[index][-1])+'\n')
-                # file.write(str(class_acc_list_before_aggregation[index][-1])+'\n')
-                file.write(str(class_acc_list[index][-1])+'\n')
-                file.write('Local Cache model version:'+'\n')
-            file.write('----------------------------------------------------------------------'+'\n')
-            file.write('Average test acc:'+str(np.average(acc_global,axis=0)[-1])+'\n')
-            file.write('Variance test acc:'+str(np.var(acc_global,axis=0)[-1])+'\n')
-
-        
-        with open(model_dir+'/average_acc_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_epoch_time_'+str(args.epoch_time)+suffix_dir+'.txt','a') as file:
-            file.write(str(i)+':'+str(np.average(acc_global,axis=0)[-1])+'\t'+str(np.var(acc_global,axis=0)[-1])+'\n')
-        #write a code to early stop, if test acc remain unchanged for 10 rounds, then stop and return
-        if i>early_stop_round and (abs(np.average(acc_global,axis=0)[-early_stop_round:]-np.average(acc_global,axis=0)[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
-            comm.send('early stop', dest=0, tag=11)
-            break
-    return loss,acc_global,class_acc_list, acc_local   , model_dir
-
-def Decentralized_Cache_all_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
+def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
     model = []
     local_cache = []
     acc_global = []
@@ -1004,237 +859,7 @@ def Decentralized_Cache_all_process(suffix_dir,train_loader,test_loader,num_roun
             break
     return loss,acc_global,class_acc_list, acc_local, model_dir 
 
-def Decentralized_Cache_all_without_taxi_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    model = []
-    local_cache = []
-    acc_global = []
-    acc_global_before_aggregation = []
-    class_acc_list = []
-    class_acc_list_before_aggregation = []
-    acc_local = []
-    loss = []
-    optimizer = {}
-    scheduler = {}
-    learning_rate = lr
-    last_lr = lr
-    fresh_class_time_table = np.zeros([num_car,num_car])
-    # current_model_time_table = np.zeros(num_car)
-    # current_model_combination_table = np.eye(num_car)#statistic_data#
-    current_class_test = np.zeros([num_car,10])
-    model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+'_local_ep_'+str(local_ep)+'_epoch_time_'+str(args.epoch_time)+'_kick_out_'+str(args.kick_out) +suffix_dir
-    pair,area = write_info(model_dir)
-
-    if distribution == 'by_area':
-        train_loader = []
-        train_indices = []
-        for index in range(num_car):
-            train_indices.append([])
-            train_loader.append([])
-
-    for i in range(1,size):
-        comm.send(model_dir, dest=i, tag=7)
-        comm.send(area, dest=i, tag=8)
-    # Distribute model to all clients 
-    for i in range(num_car):
-        local_cache.append({})
-        model.append(copy.deepcopy(global_model))
-        # optimizer.append([])
-        acc_global.append([])
-        acc_global_before_aggregation.append([])
-        class_acc_list.append([])
-        class_acc_list_before_aggregation.append([])
-        acc_local.append([])
-        loss.append([])
-    for i in range(args.num_car-num_car):
-        local_cache.append({})
-    if mpi_train:
-        for j in client_rank_mapping[0]:
-            optimizer[j] = optim.SGD(params=model[j].parameters(), lr=learning_rate)
-            scheduler[j] = ReduceLROnPlateau(optimizer[j], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
-    else:
-        for index in range(num_car):
-            optimizer[index] = optim.SGD(params=model[index].parameters(), lr=learning_rate)
-            scheduler[index] = ReduceLROnPlateau(optimizer[index], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
-    # mpi_send_model_host(model)
-    for i in range(num_round):
-        print('######################################################################')
-        print('This is the round:',i)
-        # print('lr:',learning_rate)
-        if distribution == 'by_area':
-            if i == 0:
-                for index in range(num_car):
-                    train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-            else:
-                for index in range(num_car):
-                    train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-        for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
-            print(param_group['lr'])
-        # if i %300== 0:
-        #     learning_rate  = learning_rate/5
-        #     for index in range(num_car):
-        #         for param_group in optimizer[index].param_groups:
-        #             param_group['lr'] = learning_rate
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('This is the round:'+str(i)+'\n')
-            for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
-                file.write('current lr is: '+str(param_group['lr'])+'\n')
-        start_time = time.time()
-        #carry out mpi training
-        if mpi_train:
-            mpi_train_host(model,optimizer,train_loader,local_ep,loss,model_dir)
-        else:
-            time_2 = time.time()
-            for index in range(num_car):
-                normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
-            print('Host training time:'+str(time_2-start_time))
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('Host training time:'+str(time_2-start_time)+'\n')
-        
-        # model_before_aggregation = copy.deepcopy(model)
-        
-        # mpi_test_host(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation,False,model_dir)
-        if i<args.give_up_cache_round:
-            model_before_training = copy.deepcopy(model)
-            if kick_out == True:
-                for index in range(args.num_car):
-                    local_cache[index] = kick_out_timeout_model(local_cache[index],i-args.kick_out)
-                torch.cuda.empty_cache()
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    if car_type_list[a] == car_type_list[b] and car_type_list[a] != 0: 
-                        update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
-                    torch.cuda.empty_cache()
-            #########################
-            #Statistic cache age and cache number
-            cache_age = 0
-            cache_num = 0
-            for index in range(num_car):
-                cache_num += len(local_cache[index])
-                for key in local_cache[index]:
-                    cache_age += i-local_cache[index][key]['time']
-            avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
-                file.write(str(i)+':')
-                file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
-            #########################
-            cache_info = np.zeros([num_car])
-            for index in range(num_car):
-                # cache_info_by_time[0][index] += 1 
-                cache_info[index] += 1
-                for key in local_cache[index]:
-                    # print(local_cache[index][key]['time'])
-                    cache_info[key] += 1
-            with open(model_dir+'/cache_info.txt','a') as file:
-                file.write('This is the round:'+str(i)+'\n')
-                file.write(str(cache_info)+'\n')
-            # do model aggregation
-            print('Updated/aggregated model time/combination:')
-            for index in range(num_car):
-                model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
-        else:
-            receiver_buffer = {}
-            model_before_training = copy.deepcopy(model)
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    if car_type_list[a] == car_type_list[b] and car_type_list[a] != 0: 
-                        receiver_buffer[a] = b
-                        receiver_buffer[b] = a
-            # Then check receiver_buffer, if the model is in the buffer, then do aggregation
-            for key, buffered_model_id in receiver_buffer.items():  
-                model[key].load_state_dict(average_weights([model[key].state_dict(),model_before_training[buffered_model_id].state_dict()],np.array([weights[key],weights[buffered_model_id]])))
-                model[key].to(device)
-           
-            
-        
-
-        mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        # if distribution != 'by_area':
-        if use_lr_scheduler:
-            if mpi_train:
-                for index in range(1,size):
-                    comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
-                for j in client_rank_mapping[0]:
-                    scheduler[j].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[j].get_last_lr()[0]
-            else:
-                for index in range(num_car):
-                    scheduler[index].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[index].get_last_lr()[0]
-            if last_lr != new_lr and args.kick_out > 1:
-                # args.kick_out -=1
-                last_lr = new_lr
-        else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                if mpi_train:
-                    for j in client_rank_mapping[0]:
-                        change_learning_rate(optimizer[j], learning_rate)
-                else:
-                    for index in range(num_car):
-                        change_learning_rate(optimizer[index], learning_rate)
-        
-        end_time = time.time()
-        
-
-        
-        for index in range(num_car):
-            current_class_test[index] = class_acc_list[index][-1]
-        # print(current_model_combination_table)
-        # print(current_class_test)
-        print(fresh_class_time_table)
-        for index in range(num_car):
-            print(class_acc_list[index][-1])
-        print(f'{end_time-start_time} [sec] for this epoch')
-        # print('Before/After aggregation acc:')
-        # for index in range(num_car):
-        #     print('car:',index,'---------------------------------------------------------------')
-        #     print(acc_global_before_aggregation[index][-1],acc_global[index][-1])
-        #     print(class_acc_list_before_aggregation[index][-1])
-        #     print(class_acc_list[index][-1])
-        #     print('Local Cache model version:')
-        #     for key in local_cache[index]:
-        #         print(key,local_cache[index][key]['time'])#,local_cache[index][key]['fresh_metric'])
-        # print('----------------------------------------------------------------------')
-        print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        print('Variance test acc:',np.var(acc_global,axis=0)[-1])
-        print('pair:',pair[i])
-        with open(model_dir+'/log.txt','a') as file:
-            file.write('fresh_class_time_table\n')
-            file.write(str(fresh_class_time_table)+'\n')
-            for index in range(num_car):
-                file.write(str(index)+':'+str(class_acc_list[index][-1])+'\n')
-            file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
-            file.write('Before/After aggregation acc:'+'\n')
-            for index in range(num_car):
-                file.write('car:'+str(index)+'---------------------------------------------------------------'+'\n')
-                file.write(str(acc_global[index][-1])+'\n')
-                # file.write(str(acc_global_before_aggregation[index][-1])+','+str(acc_global[index][-1])+'\n')
-                # file.write(str(class_acc_list_before_aggregation[index][-1])+'\n')
-                file.write(str(class_acc_list[index][-1])+'\n')
-                file.write('Local Cache model version:'+'\n')
-                for key in local_cache[index]:
-                    file.write(str(key)+':'+str(local_cache[index][key]['time'])+'\n')#,local_cache[index][key]['fresh_metric'])
-            file.write('----------------------------------------------------------------------'+'\n')
-            file.write('Average test acc:'+str(np.average(acc_global,axis=0)[-1])+'\n')
-            file.write('Variance test acc:'+str(np.var(acc_global,axis=0)[-1])+'\n')
-        with open(model_dir+'/average_acc_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+'_local_ep_'+str(local_ep)+'_epoch_time_'+str(args.epoch_time)+'_kick_out_'+str(args.kick_out)+suffix_dir+'.txt','a') as file:
-           file.write(str(i)+':'+str(np.average(acc_global,axis=0)[-1])+'\t'+str(np.var(acc_global,axis=0)[-1])+'\n')
-        
-        
-        
-        
-        #write a code to early stop, if test acc remain unchanged for 10 rounds, then stop and return
-        if i>early_stop_round and (abs(np.average(acc_global,axis=0)[-early_stop_round:]-np.average(acc_global,axis=0)[-1])<1e-7).all():
-            print('early stop at round:',i)
-            with open(model_dir+'/log.txt','a') as file:
-                file.write('early stop at round:'+str(i)+'\n')
-            comm.send('early stop', dest=0, tag=11)
-            break
-    return loss,acc_global,class_acc_list, acc_local, model_dir 
-
-def Decentralized_Cache_all_with_taxi_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
+def Decentralized_Cache_areas_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
     model = []
     local_cache = []
     acc_global = []
@@ -1474,7 +1099,7 @@ def Decentralized_Cache_all_with_taxi_process(suffix_dir,train_loader,test_loade
     return loss,acc_global,class_acc_list, acc_local, model_dir 
 
 
-def Decentralized_Cache_all_with_taxi_priority_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
+def Decentralized_Cache_areas_GB_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
     model = []
     local_cache = []
     acc_global = []
@@ -1736,7 +1361,7 @@ def Decentralized_Cache_test(train_loader,test_loader,num_round,local_ep):
     # current_model_time_table = np.zeros(num_car)
     # current_model_combination_table = np.eye(num_car)#statistic_data#
     current_class_test = np.zeros([num_car,10])
-    # model_dir = 'dfl_model_all_cache'
+    # model_dir = 'dfl_model_cache'
     for i in range(num_car):
         local_cache.append({})
         model.append(copy.deepcopy(global_model))
@@ -2162,16 +1787,12 @@ if __name__ == '__main__':
             fl_loss,  fl_test_acc, model_dir = Centralized_process(suffix,train_loader,test_loader,num_round,local_ep)
         elif args.algorithm == 'dfl':
             dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_process(suffix,train_loader, test_loader,num_round,local_ep)
-        elif args.algorithm == 'dfl_fair':
-            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_fair_process(suffix, test_loader,num_round,local_ep)
-        elif args.algorithm == 'cache_all':
-            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_process(suffix,train_loader, test_loader,num_round,local_ep)
-        elif args.algorithm == 'cache_without_taxi':
-            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_without_taxi_process(suffix,train_loader, test_loader,num_round,local_ep)
-        elif args.algorithm == 'cache_with_taxi':
-            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_with_taxi_process(suffix,train_loader, test_loader,num_round,local_ep)
-        elif args.algorithm == 'cache_with_taxi_priority':
-            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_with_taxi_priority_process(suffix,train_loader, test_loader,num_round,local_ep)
+        elif args.algorithm == 'cache':
+            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_process(suffix,train_loader, test_loader,num_round,local_ep)
+        elif args.algorithm == 'cache_areas_LRU':
+            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_areas_process(suffix,train_loader, test_loader,num_round,local_ep)
+        elif args.algorithm == 'cache_areas_GB':
+            dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_areas_GB_process(suffix,train_loader, test_loader,num_round,local_ep)
         else:
             raise ValueError('Error')
         if args.algorithm == 'ml':

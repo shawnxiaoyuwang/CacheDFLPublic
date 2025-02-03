@@ -101,8 +101,7 @@ parser.add_argument('--no-weighted_aggregation', dest='weighted_aggregation', ac
 parser.set_defaults(weighted_aggregation=True)
 
 parser.add_argument("--algorithm", type=str, choices=[
-    'ml', 'cfl', 'dfl', 'dfl_fair', 'cache_one', 'cache_all', 'fresh', 'fresh_update_fresh_by_dp',
-    'fresh_count', 'fresh_history', 'best_test_cache', 'test', 'test_taxi', 'test_taxi_priority'
+    'ml', 'cfl', 'dfl',  'cache', 'test', 'test_taxi', 'test_taxi_priority'
 ], help="Algorithm to run")
 
 args = parser.parse_args()
@@ -538,109 +537,6 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
 
 
 
-def Decentralized_fair_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
-    """
-    Similar to Decentralized_process, but tries to 'fairly' aggregate
-    by adjusting weights after each interaction.
-    """
-    model_list = []
-    acc_global = []
-    acc_global_before_aggregation = []
-    class_acc_list = []
-    class_acc_list_before_aggregation = []
-    acc_local = []
-    loss_list = []
-    optimizer_list = []
-    learning_rate = lr
-
-    model_dir = './result/{}_{}_{}_{}_{}'.format(
-        date_time.strftime('%Y-%m-%d %H_%M_%S'), task, distribution,
-        Randomseed, args.algorithm + suffix_dir
-    )
-    pair, area = write_info(model_dir)
-
-    for _ in range(num_car):
-        m = copy.deepcopy(global_model).to(device)
-        opt = optim.SGD(params=m.parameters(), lr=learning_rate)
-        model_list.append(m)
-        optimizer_list.append(opt)
-        acc_global.append([])
-        acc_global_before_aggregation.append([])
-        class_acc_list.append([])
-        class_acc_list_before_aggregation.append([])
-        acc_local.append([])
-        loss_list.append([])
-
-    for i in range(num_round):
-        print('==================================================================')
-        print('Round:', i)
-        # Manual LR decay
-        if i > 0 and i % decay_round == 0:
-            learning_rate = learning_rate / 10
-        for opt in optimizer_list:
-            change_learning_rate(opt, learning_rate)
-
-        for param_group in optimizer_list[0].param_groups:
-            print("Current LR =", param_group['lr'])
-
-        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
-            file.write(f'Round: {i}\n')
-            for param_group in optimizer_list[0].param_groups:
-                file.write('Current LR = {}\n'.format(param_group['lr']))
-
-        start_time = time.time()
-        # Local training
-        for idx in range(num_car):
-            normal_training_process(model_list[idx], optimizer_list[idx],
-                                    train_loader[idx], local_ep, loss_list[idx])
-
-        # Evaluate before aggregating
-        model_before_aggregation = copy.deepcopy(model_list)
-        final_test(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation)
-
-        # "Fair" aggregation: dynamically adjust weights
-        temp_weights = copy.deepcopy(weights)
-        for (a, b) in pair[i]:
-            weighted_average_process(model_list[a], model_list[b],
-                                     np.array([temp_weights[a], temp_weights[b]]))
-            # Increase weights so these two have a bigger say going forward
-            temp_weights[a] = temp_weights[a] + temp_weights[b]
-            temp_weights[b] = temp_weights[a]
-            model_list[a].to(device)
-            model_list[b].to(device)
-
-        # Evaluate after
-        end_time = time.time()
-        final_test(model_list, acc_global, class_acc_list)
-
-        avg_acc = np.average(acc_global, axis=0)[-1]
-        print(f'{end_time - start_time:.2f} sec for this round')
-        print('Average test acc:', avg_acc)
-
-        with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
-            file.write(f'{end_time - start_time:.2f} sec for this epoch\n')
-            file.write('Before/After aggregation acc:\n')
-            for idx in range(num_car):
-                bef = acc_global_before_aggregation[idx][-1]
-                aft = acc_global[idx][-1]
-                file.write(f'Car {idx} | {bef} -> {aft}\n')
-            file.write('Average test acc:' + str(avg_acc) + '\n')
-
-        fn_name = f'average_acc_{task}_{distribution}_{Randomseed}_{args.algorithm}{suffix_dir}.txt'
-        with open(os.path.join(model_dir, fn_name), 'a') as file:
-            file.write(f'{i}:{avg_acc}\n')
-
-        # Early stop
-        if i > early_stop_round and (
-           abs(np.average(acc_global, axis=0)[-early_stop_round:] - avg_acc) < 1e-7
-        ).all():
-            print('Early stop at round:', i)
-            with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
-                file.write('Early stop at round:{}\n'.format(i))
-            break
-
-    return loss_list, acc_global, class_acc_list, acc_local, model_dir
- 
 
 def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
     """
@@ -847,7 +743,7 @@ def Decentralized_Cache_test_taxi():
                 for key in local_cache[index]:
                     cache_age += i-local_cache[index][key]['time']
             avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str('cache_all' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
+            with open(model_dir+'/cache_age_cache_num_'+str('cache' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
                 file.write(str(i)+':')
                 file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
             # with open(model_dir+'/cache_info.txt','a') as file:
@@ -1012,7 +908,7 @@ def Decentralized_Cache_test_taxi_priority():
                 for key in local_cache[index]:
                     cache_age += i-local_cache[index][key]['time']
             avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str('cache_all' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
+            with open(model_dir+'/cache_age_cache_num_'+str('cache' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
                 file.write(str(i)+':')
                 file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
             with open(model_dir+'/log.txt','a') as file:
@@ -1047,7 +943,7 @@ def Decentralized_Cache_test():
     acc_local = []
     loss = []
     optimizer = []
-    model_dir = './result/test/cache_all'
+    model_dir = './result/test/cache'
     pair,area = write_info(model_dir)
 
     for i in range(num_car):
@@ -1092,7 +988,7 @@ def Decentralized_Cache_test():
                 for key in local_cache[index]:
                     cache_age += i-local_cache[index][key]['time']
             avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str('cache_all' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
+            with open(model_dir+'/cache_age_cache_num_'+str('cache' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
                 file.write(str(i)+':')
                 file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
         end_time = time.time()
@@ -1142,7 +1038,7 @@ if __name__ == '__main__':
     args.algorithm = 'test_taxi_priority'
     # distribution = 'iid'
     # args.algorithm = 'test_mixing'
-    # args.algorithm = 'cache_all'
+    # args.algorithm = 'cache'
     cache_size = 3
     kick_out = True
     args.kick_out = 5
@@ -1337,18 +1233,12 @@ if __name__ == '__main__':
         final_avg_acc = np.average(dfl_acc_global, axis=0)
         print("DFL average accuracy:", final_avg_acc)
 
-    elif args.algorithm == 'dfl_fair':
-        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_fair_process(
-            args.suffix, train_loader, test_loader, num_round, local_ep
-        )
-        print("DFL fair average accuracy:", np.average(dfl_acc_global, axis=0))
-
-    elif args.algorithm == 'cache_all':
-        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_all_process(
+    elif args.algorithm == 'cache':
+        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local, model_dir = Decentralized_Cache_process(
             args.suffix, train_loader, test_loader, num_round, local_ep
         )
         final_avg_acc = np.average(dfl_acc_global, axis=0)
-        print("cache_all average accuracy:", final_avg_acc)
+        print("cache average accuracy:", final_avg_acc)
 
     elif args.algorithm == 'test':
         # Example placeholder
