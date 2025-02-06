@@ -443,7 +443,7 @@ def get_fashionmnist_dirichlet(alpha, num_car,batch_size,test_ratio):
     
     return train_loader, sub_test_loader,full_test_loader, full_loader
 
-def get_fashionmnist_taxi_area(shards_allocation_list,batch_size,test_ratio,car_type_list,target_labels):
+def get_fashionmnist_area(shards_allocation_list,batch_size,test_ratio,car_type_list,target_labels):
     #MNIST
     data_dir = '../data/'
     apply_transform = transforms.Compose([
@@ -783,7 +783,7 @@ def get_mnist_imbalance(shards_allocation_list, num_car,batch_size,test_ratio):
 
 
 
-def get_mnist_taxi_area(shards_allocation_list,batch_size,test_ratio,car_type_list,target_labels):
+def get_mnist_area(shards_allocation_list,batch_size,test_ratio,car_type_list,target_labels):
     #MNIST
     data_dir = '../data/'
     apply_transform = transforms.Compose([

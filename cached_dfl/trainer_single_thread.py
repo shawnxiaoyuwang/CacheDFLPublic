@@ -36,10 +36,10 @@ from utils_cnn import test
 from model import get_P_matrix, CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, AlexNet, DNN_harbox
 from models import ResNet18
 from data_loader import (
-    get_mnist_iid, get_mnist_taxi_area, get_mnist_imbalance, get_mnist_dirichlet,
+    get_mnist_iid, get_mnist_area, get_mnist_imbalance, get_mnist_dirichlet,
     initial_mnist, update_training_subset, get_dataloader_by_indices, initial_training_subset,
     get_cifar10_iid, get_cifar10_imbalance, get_cifar10_dirichlet,
-    get_fashionmnist_taxi_area, get_fashionmnist_iid, get_fashionmnist_imbalance, get_fashionmnist_dirichlet,
+    get_fashionmnist_area, get_fashionmnist_iid, get_fashionmnist_imbalance, get_fashionmnist_dirichlet,
     get_harbox_iid, get_harbox_imbalance, get_harbox_dirichlet
 )
 from road_sim import generate_roadNet_pair_area_list
@@ -72,7 +72,7 @@ parser.add_argument("--decay_round", type=int, default=200, help="Round interval
 parser.add_argument("--car_meet_p", type=float, default=1./9, help="Car meet probability")
 parser.add_argument("--alpha_time", type=float, default=0.01, help="Alpha time")
 parser.add_argument("--alpha", type=float, default=0.5, help="Dirichlet alpha for non-iid data")
-parser.add_argument("--distribution", type=str, choices=['iid', 'non-iid', 'dirichlet'],
+parser.add_argument("--distribution", type=str, choices=['iid', 'non-iid', 'dirichlet','area'],
                     help="Choose data distribution")
 parser.add_argument("--aggregation_metric", type=str, default="mean", help="Aggregation metric")
 parser.add_argument("--cache_update_metric", type=str, default="mean", help="Cache update metric")
@@ -147,18 +147,12 @@ def write_info(write_dir):
         file.write('Aggregation weights = ' + str(weights) + '\n')
         file.write('County = ' + str(args.County) + '\n')
         file.write('kick_out = ' + str(args.kick_out) + '\n')
-        if distribution != 'by_area':
-            file.write('alpha = ' + str(alpha) + '\n')
-            file.write('Data distribution among cars:\n')
-            file.write(str(statistic_data) + '\n')
-            file.write('Data similarity among cars:\n')
-            file.write(str(data_similarity) + '\n')
-            file.write('Data_points:\n' + str(data_points) + '\n')
-        else:
-            file.write('This is by_area distribution, no statistic data distribution.\n')
-            file.write('Initial data size per car:' + str(initial_size) + '\n')
-            file.write('Max data size per car:' + str(max_size) + '\n')
-            file.write('Update fraction:' + str(update_fraction) + '\n')
+        file.write('alpha = ' + str(alpha) + '\n')
+        file.write('Data distribution among cars:\n')
+        file.write(str(statistic_data) + '\n')
+        file.write('Data similarity among cars:\n')
+        file.write(str(data_similarity) + '\n')
+        file.write('Data_points:\n' + str(data_points) + '\n')
         file.write('mixing table' + str(mixing_table) + '\n')
         file.write('mixing pair' + str(mixing_pair) + '\n')
 
@@ -414,15 +408,6 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
     )
     pair, area = write_info(model_dir)
 
-    # If distribution == 'by_area', we dynamically update data each round
-    if distribution == 'by_area':
-        # We'll rebuild train_loader every round
-        global train_dataset
-        train_loader = []
-        train_indices = []
-        for _ in range(num_car):
-            train_indices.append([])
-            train_loader.append([])
 
     # Initialize
     for _ in range(num_car):
@@ -440,23 +425,6 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
     for i in range(num_round):
         print('==================================================================')
         print('Round:', i)
-
-        # If "by_area", dynamically update training subset
-        if distribution == 'by_area':
-            if i == 0:
-                for idx in range(num_car):
-                    train_indices[idx] = initial_training_subset(train_dataset, area[idx][i], initial_size)
-                    train_loader[idx] = get_dataloader_by_indices(
-                        train_dataset, train_indices[idx], batch_size
-                    )
-            else:
-                for idx in range(num_car):
-                    train_indices[idx] = update_training_subset(
-                        train_indices[idx], train_dataset, area[idx][i], max_size, update_fraction
-                    )
-                    train_loader[idx] = get_dataloader_by_indices(
-                        train_dataset, train_indices[idx], batch_size
-                    )
 
         # Decay LR manually
         if i > 0 and i % decay_round == 0:
@@ -1034,7 +1002,7 @@ if __name__ == '__main__':
 
 
     task = 'fashionmnist'
-    distribution = 'taxi_area'
+    distribution = 'area'
     args.algorithm = 'test_taxi_priority'
     # distribution = 'iid'
     # args.algorithm = 'test_mixing'
@@ -1042,7 +1010,7 @@ if __name__ == '__main__':
     cache_size = 3
     kick_out = True
     args.kick_out = 5
-    if distribution == 'taxi_area':
+    if distribution == 'area':
         kick_out = False
     args.epoch_time = 120
     num_car = 100
@@ -1080,19 +1048,13 @@ if __name__ == '__main__':
             train_loader, sub_test_loader, test_loader, full_loader = \
                 get_mnist_dirichlet(alpha, num_car, batch_size, test_ratio)
             data_distribution += f'_{alpha}'
-        elif distribution == 'by_area':
-            train_dataset, sub_test_loader, test_loader, full_loader = \
-                initial_mnist(batch_size, test_ratio)
-            initial_size = int(len(train_dataset) / num_car)
-            max_size = int(len(train_dataset) / num_car)
-            update_fraction = 0.1
-        elif distribution == 'taxi_area':
+        elif distribution == 'area':
             # Example usage
             car_area_list = [1]*34 + [2]*33 + [3]*33  # total 100
             # Shards or target labels example:
             target_labels = [[9, 0, 1, 2], [3, 4, 5, 6], [6, 7, 8, 9]]
             train_loader, sub_test_loader, test_loader, full_loader = \
-                get_mnist_taxi_area(args.shards_allocation, batch_size, test_ratio,
+                get_mnist_area(args.shards_allocation, batch_size, test_ratio,
                                     car_area_list, target_labels)
         else:
             raise ValueError('Unsupported MNIST distribution')
@@ -1129,12 +1091,12 @@ if __name__ == '__main__':
             train_loader, sub_test_loader, test_loader, full_loader = \
                 get_fashionmnist_dirichlet(alpha, num_car, batch_size, test_ratio)
             data_distribution += f'_{alpha}'
-        elif distribution == 'taxi_area':
+        elif distribution == 'area':
             # Example usage
             car_area_list = [1]*34 + [2]*33 + [3]*33
             target_labels = [[9, 0, 1, 2], [3, 4, 5, 6], [6, 7, 8, 9]]
             train_loader, sub_test_loader, test_loader, full_loader = \
-                get_fashionmnist_taxi_area(args.shards_allocation, batch_size,
+                get_fashionmnist_area(args.shards_allocation, batch_size,
                                            test_ratio, car_area_list, target_labels)
         else:
             raise ValueError('Unsupported FashionMNIST distribution')
@@ -1161,39 +1123,32 @@ if __name__ == '__main__':
     global_model.to(device)
 
     # --------------------------------------------------------------------------------
-    # Prepare data statistics if not by_area
+    # Prepare data statistics
     # --------------------------------------------------------------------------------
-    if distribution == 'by_area':
-        print('Using by_area distribution. No direct data statistic is recorded.')
-        print('Initial size =', initial_size)
-        print('Max size =', max_size)
-        print('Update fraction =', update_fraction)
-        weights = [1]*num_car
+    statistic_data = np.zeros([num_car, num_class])
+    for i in range(num_car):
+        for _, target in train_loader[i]:
+            for t in target:
+                statistic_data[i][t] += 1
+    print('Data distribution among cars:')
+    print(statistic_data)
+    max_std = np.zeros(num_car)
+    for i in range(num_car):
+        for j in range(num_car):
+            var_ij = np.var(statistic_data[i] - statistic_data[j])
+            if var_ij > max_std[i]:
+                max_std[i] = var_ij
+    data_points = np.sum(statistic_data, axis=1)
+    print("Total Data Points:", sum(data_points))
+    print("Data points fraction per car:", data_points / sum(np.array(data_points)))
+    if args.weighted_aggregation:
+        weights = data_points
     else:
-        statistic_data = np.zeros([num_car, num_class])
-        for i in range(num_car):
-            for _, target in train_loader[i]:
-                for t in target:
-                    statistic_data[i][t] += 1
-        print('Data distribution among cars:')
-        print(statistic_data)
-        max_std = np.zeros(num_car)
-        for i in range(num_car):
-            for j in range(num_car):
-                var_ij = np.var(statistic_data[i] - statistic_data[j])
-                if var_ij > max_std[i]:
-                    max_std[i] = var_ij
-        data_points = np.sum(statistic_data, axis=1)
-        print("Total Data Points:", sum(data_points))
-        print("Data points fraction per car:", data_points / sum(np.array(data_points)))
-        if args.weighted_aggregation:
-            weights = data_points
-        else:
-            weights = [1]*num_car
+        weights = [1]*num_car
 
-        data_similarity = cosine_similarity(statistic_data)
-        print("Data similarity (cosine):")
-        print(data_similarity)
+    data_similarity = cosine_similarity(statistic_data)
+    print("Data similarity (cosine):")
+    print(data_similarity)
 
     # For mixing_table usage in certain caching scenarios:
     numbers = list(range(num_car))

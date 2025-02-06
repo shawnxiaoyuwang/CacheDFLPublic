@@ -28,7 +28,7 @@ from aggregation import average_weights,normal_training_process,average_process,
 from utils_cnn import test
 from model import get_P_matrix,CNNMnist,Cifar10CnnModel,CNNFashion_Mnist,AlexNet,DNN_harbox
 from models import ResNet18,ResNet101
-from data_loader import get_mnist_iid, get_mnist_imbalance,get_mnist_taxi_area,get_mnist_dirichlet,initial_mnist, update_training_subset,get_dataloader_by_indices, initial_training_subset, get_cifar10_iid, get_cifar10_imbalance,get_cifar10_dirichlet,get_cifar100_iid, get_cifar100_imbalance,get_cifar100_dirichlet,get_fashionmnist_iid, get_fashionmnist_imbalance,get_fashionmnist_taxi_area,get_fashionmnist_dirichlet,get_harbox_iid, get_harbox_imbalance,get_harbox_dirichlet
+from data_loader import get_mnist_iid, get_mnist_imbalance,get_mnist_area,get_mnist_dirichlet,initial_mnist, update_training_subset,get_dataloader_by_indices, initial_training_subset, get_cifar10_iid, get_cifar10_imbalance,get_cifar10_dirichlet,get_cifar100_iid, get_cifar100_imbalance,get_cifar100_dirichlet,get_fashionmnist_iid, get_fashionmnist_imbalance,get_fashionmnist_area,get_fashionmnist_dirichlet,get_harbox_iid, get_harbox_imbalance,get_harbox_dirichlet
 from road_sim import  generate_roadNet_pair_list,generate_roadNet_pair_area_list
 import seed_setter
 Randomseed = seed_setter.set_seed()
@@ -54,7 +54,7 @@ parser.add_argument("--car_meet_p", type=float, default=1./9, help="Car meet pro
 parser.add_argument("--alpha_time", type=float, default=0.01, help="Alpha time")
 parser.add_argument("--alpha", type=float, default=0.5, help="Alpha for Dirchlet distribution, lower alpha increases heterogeneity")
 parser.add_argument("--distribution", type=str, choices=[
-    'iid', 'non-iid','dirichlet','by_area','taxi_area'], help="Choose data distirbution")
+    'iid', 'non-iid','dirichlet','area'], help="Choose data distirbution")
 parser.add_argument("--aggregation_metric", type=str, default="mean", help="Aggregation metric")
 parser.add_argument("--cache_update_metric", type=str, default="mean", help="Cache update metric")
 parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
@@ -179,7 +179,7 @@ def write_info(write_dir):
             file.write(str(mixing_table))
             file.write('mixing pair\n')
             file.write(str(mixing_pair))
-        if distribution == 'taxi_area':
+        if distribution == 'area':
             file.write('Car type list:\n')
             file.write(str(car_type_list)+'\n')
             file.write('Car area list:\n')
@@ -191,18 +191,13 @@ def write_info(write_dir):
             file.write('Car type limits:\n')
             file.write(str(type_limits_car)+'\n')
             file.write('overlap'+str(args.overlap)+'\n')
-        if distribution != 'by_area':
-            file.write('alpha = '+str(alpha)+'\n')
-            file.write('Data distribution among cars:\n')
-            file.write(str(statistic_data)+'\n')
-            file.write('Data similarity among cars:\n')
-            file.write(str(data_similarity)+'\n')
-            file.write('Data_points:\n'+str(data_points)+'\n')
-        else:
-            file.write('This is by area distribution, no statistic data distribution.'+'\n')
-            file.write('Initial data size per car:'+str(initial_size)+'\n')
-            file.write('Max data size per car:'+str(max_size)+'\n')
-            file.write('Update fraction:'+str(update_fraction)+'\n')
+        file.write('alpha = '+str(alpha)+'\n')
+        file.write('Data distribution among cars:\n')
+        file.write(str(statistic_data)+'\n')
+        file.write('Data similarity among cars:\n')
+        file.write(str(data_similarity)+'\n')
+        file.write('Data_points:\n'+str(data_points)+'\n')
+
     pair, area = generate_roadNet_pair_area_list(write_dir,args.num_car, num_round,communication_distance,args.epoch_time,speed,County,10,car_type_list)
     with open(write_dir+'/pair.txt','w') as file:
         for i in range(num_round):
@@ -486,12 +481,6 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
     learning_rate = lr
     model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_epoch_time_'+str(args.epoch_time)+suffix_dir
     pair,area = write_info(model_dir)
-    if distribution == 'by_area':
-        train_loader = []
-        train_indices = []
-        for index in range(num_car):
-            train_indices.append([])
-            train_loader.append([])
     for i in range(1,size):
         comm.send(model_dir, dest=i, tag=7)
         comm.send(area, dest=i, tag=8)
@@ -517,15 +506,6 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
     for i in range(num_round):
         print('######################################################################')
         print('This is the round:',i)
-        if distribution == 'by_area':
-            if i == 0:
-                for index in range(num_car):
-                    train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-            else:
-                for index in range(num_car):
-                    train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
         # print('lr:',learning_rate)
         for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
             print(param_group['lr'])
@@ -556,7 +536,7 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
         model_before_training = copy.deepcopy(model)
         for seconds in range(args.epoch_time):
             for a,b in pair[i*args.epoch_time+seconds]: 
-                if distribution == 'taxi_area':
+                if distribution == 'area':
                     if car_type_list[a] == car_type_list[b] or car_type_list[a] == 0 or car_type_list[b] == 0: 
                         receiver_buffer[a] = b
                         receiver_buffer[b] = a
@@ -653,13 +633,6 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
     model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+'_local_ep_'+str(local_ep)+'_epoch_time_'+str(args.epoch_time)+'_kick_out_'+str(args.kick_out) +suffix_dir
     pair,area = write_info(model_dir)
 
-    if distribution == 'by_area':
-        train_loader = []
-        train_indices = []
-        for index in range(num_car):
-            train_indices.append([])
-            train_loader.append([])
-
     for i in range(1,size):
         comm.send(model_dir, dest=i, tag=7)
         comm.send(area, dest=i, tag=8)
@@ -687,15 +660,6 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
         print('######################################################################')
         print('This is the round:',i)
         # print('lr:',learning_rate)
-        if distribution == 'by_area':
-            if i == 0:
-                for index in range(num_car):
-                    train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-            else:
-                for index in range(num_car):
-                    train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
         for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
             print(param_group['lr'])
         # if i %300== 0:
@@ -775,7 +739,6 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
         
 
         mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        # if distribution != 'by_area':
         if use_lr_scheduler:
             if mpi_train:
                 for index in range(1,size):
@@ -879,12 +842,6 @@ def Decentralized_Cache_areas_process(suffix_dir,train_loader,test_loader,num_ro
     model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+'_local_ep_'+str(local_ep)+'_epoch_time_'+str(args.epoch_time)+'_kick_out_'+str(args.kick_out) +suffix_dir
     pair,area = write_info(model_dir)
 
-    if distribution == 'by_area':
-        train_loader = []
-        train_indices = []
-        for index in range(num_car):
-            train_indices.append([])
-            train_loader.append([])
 
     for i in range(1,size):
         comm.send(model_dir, dest=i, tag=7)
@@ -915,15 +872,6 @@ def Decentralized_Cache_areas_process(suffix_dir,train_loader,test_loader,num_ro
         print('######################################################################')
         print('This is the round:',i)
         # print('lr:',learning_rate)
-        if distribution == 'by_area':
-            if i == 0:
-                for index in range(num_car):
-                    train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-            else:
-                for index in range(num_car):
-                    train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
         for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
             print(param_group['lr'])
         # if i %300== 0:
@@ -1014,7 +962,6 @@ def Decentralized_Cache_areas_process(suffix_dir,train_loader,test_loader,num_ro
         
 
         mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        # if distribution != 'by_area':
         if use_lr_scheduler:
             if mpi_train:
                 for index in range(1,size):
@@ -1119,13 +1066,6 @@ def Decentralized_Cache_areas_GB_process(suffix_dir,train_loader,test_loader,num
     model_dir = './result/'+str(date_time.strftime('%Y-%m-%d %H_%M_%S'))+'_'+task+'_'+data_distribution+'_'+str(Randomseed)+'_'+args.algorithm+'_'+str(cache_size)+'_local_ep_'+str(local_ep)+'_epoch_time_'+str(args.epoch_time)+'_kick_out_'+str(args.kick_out) +suffix_dir
     pair,area = write_info(model_dir)
 
-    if distribution == 'by_area':
-        train_loader = []
-        train_indices = []
-        for index in range(num_car):
-            train_indices.append([])
-            train_loader.append([])
-
     for i in range(1,size):
         comm.send(model_dir, dest=i, tag=7)
         comm.send(area, dest=i, tag=8)
@@ -1155,15 +1095,6 @@ def Decentralized_Cache_areas_GB_process(suffix_dir,train_loader,test_loader,num
         print('######################################################################')
         print('This is the round:',i)
         # print('lr:',learning_rate)
-        if distribution == 'by_area':
-            if i == 0:
-                for index in range(num_car):
-                    train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-            else:
-                for index in range(num_car):
-                    train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                    train_loader[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
         for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
             print(param_group['lr'])
         # if i %300== 0:
@@ -1261,7 +1192,6 @@ def Decentralized_Cache_areas_GB_process(suffix_dir,train_loader,test_loader,num
         
 
         mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        # if distribution != 'by_area':
         if use_lr_scheduler:
             if mpi_train:
                 for index in range(1,size):
@@ -1579,11 +1509,7 @@ if __name__ == '__main__':
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
-            elif distribution == 'by_area':
-                train_dataset, sub_test_loader, test_loader, full_loader =  initial_mnist(batch_size, test_ratio)
-                initial_size = int(len(train_dataset)/num_car)
-                max_size = int(len(train_dataset)/num_car)
-            elif distribution == 'taxi_area':
+            elif distribution == 'area':
                 car_type_list = []
                 car_type_list += [1]*30
                 car_type_list += [0]*4
@@ -1596,7 +1522,7 @@ if __name__ == '__main__':
                 car_area_list += [1]*34
                 car_area_list += [2]*33
                 car_area_list += [3]*33
-                train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_taxi_area(shards_allocation,  batch_size,test_ratio,car_area_list,target_labels)
+                train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_area(shards_allocation,  batch_size,test_ratio,car_area_list,target_labels)
                 data_distribution = distribution+'_'+str(args.overlap)+'_overlap'
             else:
                 raise ValueError('Error')
@@ -1629,11 +1555,6 @@ if __name__ == '__main__':
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_cifar100_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
-            elif distribution == 'by_area':
-                train_dataset, sub_test_loader, test_loader, full_loader =  initial_mnist(batch_size, test_ratio)
-                initial_size = int(len(train_dataset)/num_car)
-                max_size = int(len(train_dataset)/num_car)
-                update_fraction = 0.1
             else:
                 raise ValueError('Error')
         elif task == 'fashionmnist':
@@ -1648,7 +1569,7 @@ if __name__ == '__main__':
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
-            elif distribution == 'taxi_area':
+            elif distribution == 'area':
                 car_type_list = []
                 car_type_list += [1]*30
                 car_type_list += [0]*4
@@ -1661,7 +1582,7 @@ if __name__ == '__main__':
                 car_area_list += [1]*34
                 car_area_list += [2]*33
                 car_area_list += [3]*33
-                train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_taxi_area(shards_allocation,  batch_size,test_ratio,car_area_list,target_labels)
+                train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_area(shards_allocation,  batch_size,test_ratio,car_area_list,target_labels)
                 data_distribution = distribution+'_'+str(args.overlap)+'_overlap'
             else:
                 raise ValueError('Error')
@@ -1715,44 +1636,35 @@ if __name__ == '__main__':
                 comm.send(serialize_model(global_model), dest=i, tag=6)
         
             
-        #statistic data distribution
-        if distribution == 'by_area':
-            print('This is by area distribution, no statistic data distribution.')
-            print('Initial data size per car:',initial_size)
-            print('Max data size per car:',max_size)
-            print('Update fraction:',update_fraction)
-            weights = [1]*num_car
-            train_loader = []
+        # Distribute loader to all clients
+        if mpi_train:
+            for i in range(1,size):
+                train_loader_group = []
+                for j in client_rank_mapping[i]:
+                    train_loader_group.append(train_loader[j])
+                comm.send(train_loader_group, dest=i, tag=9)
+                comm.send(test_loader, dest=i, tag=10)         
+        statistic_data = np.zeros([num_car,num_class])
+        for i in range(num_car):
+            for input, target in train_loader[i]:
+                for item in target:
+                    statistic_data[i][item] += 1
+        print('Data distribution among cars:')
+        print(statistic_data)
+        max_std = np.zeros(num_car)
+        for i in range(num_car):
+            for j in range(num_car):
+                if max_std[i] < np.var(statistic_data[i]- statistic_data[j]):
+                    max_std[i] = np.var(statistic_data[i]- statistic_data[j])
+        data_points = np.sum(statistic_data,axis = 1)
+        print(sum(data_points))
+        print(data_points/sum(np.array(data_points)))
+        if args.weighted_aggregation == True:
+            weights = data_points
         else:
-            # Distribute loader to all clients
-            if mpi_train:
-                for i in range(1,size):
-                    train_loader_group = []
-                    for j in client_rank_mapping[i]:
-                        train_loader_group.append(train_loader[j])
-                    comm.send(train_loader_group, dest=i, tag=9)
-                    comm.send(test_loader, dest=i, tag=10)         
-            statistic_data = np.zeros([num_car,num_class])
-            for i in range(num_car):
-                for input, target in train_loader[i]:
-                    for item in target:
-                        statistic_data[i][item] += 1
-            print('Data distribution among cars:')
-            print(statistic_data)
-            max_std = np.zeros(num_car)
-            for i in range(num_car):
-                for j in range(num_car):
-                    if max_std[i] < np.var(statistic_data[i]- statistic_data[j]):
-                        max_std[i] = np.var(statistic_data[i]- statistic_data[j])
-            data_points = np.sum(statistic_data,axis = 1)
-            print(sum(data_points))
-            print(data_points/sum(np.array(data_points)))
-            if args.weighted_aggregation == True:
-                weights = data_points
-            else:
-                weights = [1]*num_car    
-            data_similarity = cosine_similarity(statistic_data)
-            print(data_similarity)
+            weights = [1]*num_car    
+        data_similarity = cosine_similarity(statistic_data)
+        print(data_similarity)
         
         
         numbers = list(range(num_car))
@@ -1853,19 +1765,10 @@ if __name__ == '__main__':
             # optimizer[index].state = {k: v.to(device) for k, v in optimizer[index].state.items()}
             scheduler.append(ReduceLROnPlateau(optimizer[index], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False))
         # receive the dataset
-        if distribution == 'by_area':
-            train_dataset, _, test_loader, full_loader =  initial_mnist(batch_size, test_ratio)
-        else:
-            train_loader_group = comm.recv(source = 0, tag = 9)
-            test_loader = comm.recv(source = 0, tag = 10)
+        train_loader_group = comm.recv(source = 0, tag = 9)
+        test_loader = comm.recv(source = 0, tag = 10)
         model_dir = comm.recv(source = 0, tag = 7)
         area = comm.recv(source = 0, tag = 8)
-        if distribution == 'by_area':
-            train_loader_group = []
-            train_indices = []
-            for i in range(num_client):
-                train_indices.append([])
-                train_loader_group.append([])
         # if rank == size-1:
         statistic_data = np.zeros([num_client,10])
         for i in range(num_client):
@@ -1905,15 +1808,6 @@ if __name__ == '__main__':
             with open(model_dir+'/rank_log/log_'+str(rank)+'.txt','a') as file:
                 file.write('This is the round: '+str(i)+'\n')
                 file.write('---------------------------------------------------------------------------\n')
-            if distribution == 'by_area':
-                if i == 0:
-                    for index in range(num_client):
-                        train_indices[index] = initial_training_subset(train_dataset, area[index][i],initial_size)
-                        train_loader_group[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
-                else:
-                    for index in range(num_client):
-                        train_indices[index] = update_training_subset(train_indices[index], train_dataset, area[index][i], max_size, update_fraction)
-                        train_loader_group[index] = get_dataloader_by_indices(train_dataset, train_indices[index], batch_size)
             #train current model
             #receive new model
 
