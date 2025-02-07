@@ -101,7 +101,7 @@ parser.add_argument('--no-weighted_aggregation', dest='weighted_aggregation', ac
 parser.set_defaults(weighted_aggregation=True)
 
 parser.add_argument("--algorithm", type=str, choices=[
-    'ml', 'cfl', 'dfl',  'cache', 'test', 'test_taxi', 'test_taxi_priority'
+    'ml', 'cfl', 'dfl',  'cache', 'test', 'test_area', 'test_area_GB'
 ], help="Algorithm to run")
 
 args = parser.parse_args()
@@ -611,7 +611,7 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
     return loss_list, acc_global, class_acc_list, acc_local, model_dir
 
 
-def Decentralized_Cache_test_taxi():
+def Decentralized_Cache_test_area():
     """
     Example test for taxi scenario. Simplified, no real training loop—just demonstrates
     how you might do repeated rounds of local training & cache updates in one thread.
@@ -808,7 +808,7 @@ def Decentralized_Cache_test_taxi():
         # print(duration)
     return loss,[0,0,0],class_acc_list, acc_local 
 
-def Decentralized_Cache_test_taxi_priority():
+def Decentralized_Cache_test_area_GB():
     """
     Another scenario test. Single-thread approach (no mp).
     """
@@ -1003,7 +1003,7 @@ if __name__ == '__main__':
 
     task = 'fashionmnist'
     distribution = 'area'
-    args.algorithm = 'test_taxi_priority'
+    args.algorithm = 'test_area_GB'
     # distribution = 'iid'
     # args.algorithm = 'test_mixing'
     # args.algorithm = 'cache'
@@ -1200,12 +1200,12 @@ if __name__ == '__main__':
         dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test()
         print("Test Mode - dfl_acc_global:", dfl_acc_global)
 
-    elif args.algorithm == 'test_taxi':
-        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test_taxi()
+    elif args.algorithm == 'test_area':
+        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test_area()
         print("Test Taxi Mode - dfl_acc_global:", dfl_acc_global)
 
-    elif args.algorithm == 'test_taxi_priority':
-        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test_taxi_priority()
+    elif args.algorithm == 'test_area_GB':
+        dfl_loss, dfl_acc_global, df_class_acc, dfl_acc_local = Decentralized_Cache_test_area_GB()
         print("Test Taxi Priority - dfl_acc_global:", dfl_acc_global)
 
     else:
