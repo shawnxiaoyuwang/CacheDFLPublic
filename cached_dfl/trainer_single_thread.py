@@ -33,8 +33,7 @@ from aggregation import (
     subgradient_push_process, weighted_average_process
 )
 from utils_cnn import test
-from model import get_P_matrix, CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, AlexNet, DNN_harbox
-from models import ResNet18
+from model import get_P_matrix, CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, AlexNet, DNN_harbox, ResNet18
 from data_loader import (
     get_mnist_iid, get_mnist_area, get_mnist_imbalance, get_mnist_dirichlet,
     initial_mnist, update_training_subset, get_dataloader_by_indices, initial_training_subset,

@@ -54,10 +54,6 @@ A **cache-based Distributed Federated Learning** framework (experimental) for **
    ```plaintext
    Cache-DFL/
    ├── cache_dfl/                # Main Python package
-   │   ├── models/
-   │   │   ├── __init__.py
-   │   │   ├── resnet.py
-   │   │   └── ...
    │   ├── aggregation.py
    │   ├── cache_algorithm.py    #
    │   ├── trainer_single.py     # Contains main training logic on single thread
