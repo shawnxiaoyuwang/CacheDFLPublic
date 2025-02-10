@@ -31,11 +31,12 @@ from aggregation import (
     weighted_average_process
 )
 from utils_cnn import test
-from model import CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, ResNet18
+from model import CNNMnist, CNNFashion_Mnist, ResNet18
+
 from data_loader import (
-    get_mnist_iid, get_mnist_area, get_mnist_dirichlet,
-    get_cifar10_iid,  get_cifar10_dirichlet,
-    get_fashionmnist_area, get_fashionmnist_iid,  get_fashionmnist_dirichlet,
+    get_mnist_iid, get_mnist_area, get_mnist_dirichlet, get_mnist_non_iid,
+    get_cifar10_iid,  get_cifar10_dirichlet, get_cifar10_non_iid
+    get_fashionmnist_area, get_fashionmnist_iid,  get_fashionmnist_dirichlet, get_fashionmnist_non_iid
 )
 from road_sim import generate_roadNet_pair_area_list
 import seed_setter
@@ -62,17 +63,10 @@ parser.add_argument("--task", type=str, choices=['mnist', 'fashionmnist', 'cifar
                     help="Dataset task to run")
 parser.add_argument("--local_ep", type=int, default=10, help="Number of local epochs")
 parser.add_argument("--lr", type=float, default=0.1, help="Learning rate")
-parser.add_argument("--decay_rate", type=float, default=0.02, help="Decay rate")
-parser.add_argument("--decay_round", type=int, default=200, help="Round interval to decay LR")
-parser.add_argument("--car_meet_p", type=float, default=1./9, help="Car meet probability")
-parser.add_argument("--alpha_time", type=float, default=0.01, help="Alpha time")
 parser.add_argument("--alpha", type=float, default=0.5, help="Dirichlet alpha for non-iid data")
 parser.add_argument("--distribution", type=str, choices=['iid', 'non-iid', 'dirichlet','area'],
                     help="Choose data distribution")
-parser.add_argument("--aggregation_metric", type=str, default="mean", help="Aggregation metric")
-parser.add_argument("--cache_update_metric", type=str, default="mean", help="Cache update metric")
 parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
-parser.add_argument("--sample_size", type=int, default=200, help="Sample size")
 parser.add_argument("--hidden_size", type=int, default=200, help="Hidden layer size (if applicable)")
 parser.add_argument("--num_round", type=int, default=2000, help="Number of rounds")
 parser.add_argument("--early_stop_round", type=int, default=20,
@@ -124,10 +118,6 @@ def write_info(write_dir):
         file.write('Random Seed = ' + str(Randomseed) + '\n')
         file.write('local_ep = ' + str(args.local_ep) + '\n')
         file.write('lr = ' + str(args.lr) + '\n')
-        file.write('decay_round = ' + str(args.decay_round) + '\n')
-        file.write('alpha_time = ' + str(args.alpha_time) + '\n')
-        file.write('aggregation_metric = ' + str(args.aggregation_metric) + '\n')
-        file.write('cache_update_metric = ' + str(args.cache_update_metric) + '\n')
         file.write('batch_size = ' + str(args.batch_size) + '\n')
         file.write('hidden_size = ' + str(args.hidden_size) + '\n')
         file.write('lr_factor = ' + str(args.lr_factor) + '\n')
@@ -148,8 +138,6 @@ def write_info(write_dir):
         file.write('Data similarity among cars:\n')
         file.write(str(data_similarity) + '\n')
         file.write('Data_points:\n' + str(data_points) + '\n')
-        file.write('mixing table' + str(mixing_table) + '\n')
-        file.write('mixing pair' + str(mixing_pair) + '\n')
 
     # Generate pair & area from road network simulation
     pair, area = generate_roadNet_pair_area_list(
@@ -169,38 +157,13 @@ def write_info(write_dir):
     return pair, area
 
 
-def adjust_learning_rate(optimizer, epoch, initial_lr, decay_rate):
+def final_test(model, acc_list, class_acc_list):
     """
-    Example learning rate scheduler. Not actively used in main code unless you call it.
-    """
-    lr = initial_lr
-    if epoch > 0 and epoch % 100 == 0:
-        lr = lr / 10
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-    return lr
-
-
-def update_learning_rate(i, learning_rate):
-    """Helper to manually decay LR every 'decay_round' steps."""
-    if i > 0 and i % decay_round == 0:
-        learning_rate = learning_rate / 10
-    return learning_rate
-
-
-def change_learning_rate(optimizer, lr):
-    """Apply a new learning rate to an optimizer."""
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-
-def final_test(model_list, acc_list, class_acc_list):
-    """
-    Evaluate each model in 'model_list' on the global test_loader,
+    Evaluate each model in 'model' on the global test_loader,
     storing accuracy and class-wise accuracy in acc_list & class_acc_list.
     """
-    for i in range(len(model_list)):
-        acc, class_acc = test(model_list[i], test_loader, num_class)
+    for i in range(len(model)):
+        acc, class_acc = test(model[i], test_loader, num_class)
         acc_list[i].append(acc)
         class_acc_list[i].append(class_acc)
 
@@ -260,12 +223,8 @@ def ml_process(suffix_dir, train_loader,test_loader, num_round,local_ep):
         print('Accuracy:', current_acc)
         print('Class accuracy:', class_acc)
 
-        # Optional scheduler step
-        if use_lr_scheduler:
-            scheduler.step(current_acc)
-        else:
-            learning_rate = update_learning_rate(i, learning_rate)
-            change_learning_rate(optimizer, learning_rate)
+        # use_lr_scheduler:
+        scheduler.step(current_acc)
 
         # Log
         with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
@@ -294,11 +253,11 @@ def Centralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
     Standard Centralized FL (cooperative):
       - Each client trains locally -> all models are uploaded -> average -> broadcast back.
     """
-    model_list = []
+    model = []
     test_acc = []
     class_acc_list = []
     loss_list = []
-    optimizer_list = []
+    optimizer = []
     scheduler_list = []
     learning_rate = lr
 
@@ -314,36 +273,36 @@ def Centralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
         opt = optim.SGD(params=m.parameters(), lr=lr)
         sched = ReduceLROnPlateau(opt, mode='max', factor=args.lr_factor,
                                   patience=args.lr_patience, verbose=False)
-        model_list.append(m)
-        optimizer_list.append(opt)
+        model.append(m)
+        optimizer.append(opt)
         scheduler_list.append(sched)
         loss_list.append([])
 
     for i in range(num_round):
         print('Round:', i)
-        for param_group in optimizer_list[0].param_groups:
+        for param_group in optimizer[0].param_groups:
             print("Current LR =", param_group['lr'])
         with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
             file.write('Round: {}\n'.format(i))
-            for param_group in optimizer_list[0].param_groups:
+            for param_group in optimizer[0].param_groups:
                 file.write('Current LR = {}\n'.format(param_group['lr']))
 
         start_time = time.time()
 
         # Local training on each device
         for idx in range(num_car):
-            normal_training_process(model_list[idx], optimizer_list[idx],
+            normal_training_process(model[idx], optimizer[idx],
                                     train_loader[idx], local_ep, loss_list[idx])
 
         # Aggregate
-        w = [copy.deepcopy(m.state_dict()) for m in model_list]
+        w = [copy.deepcopy(m.state_dict()) for m in model]
         avg_w = average_weights(w, np.array(weights))
         for idx in range(num_car):
-            model_list[idx].load_state_dict(copy.deepcopy(avg_w))
-            model_list[idx].to(device)
+            model[idx].load_state_dict(copy.deepcopy(avg_w))
+            model[idx].to(device)
 
-        # Evaluate on a single "global" model (model_list[0] after averaging)
-        acc, c_acc = test(model_list[0], test_loader)
+        # Evaluate on a single "global" model (model[0] after averaging)
+        acc, c_acc = test(model[0], test_loader)
         test_acc.append(acc)
         class_acc_list.append(c_acc)
         print('Test acc:', acc)
@@ -353,14 +312,8 @@ def Centralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
         print(f'{end_time - start_time:.2f} seconds for this round')
 
         # Adjust LR
-        if use_lr_scheduler:
-            for sch in scheduler_list:
-                sch.step(acc)
-        else:
-            learning_rate = update_learning_rate(i, learning_rate)
-            for opt in optimizer_list:
-                change_learning_rate(opt, learning_rate)
-
+        for sch in scheduler_list:
+            sch.step(acc)
         # Logging
         with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
             file.write(f'{end_time - start_time:.2f} sec for this epoch\n')
@@ -387,14 +340,15 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
       - Each car trains locally
       - Pairwise model exchange/aggregation (graph-based) each round
     """
-    model_list = []
+    model = []
     acc_global = []
     acc_global_before_aggregation = []
     class_acc_list = []
     class_acc_list_before_aggregation = []
     acc_local = []
     loss_list = []
-    optimizer_list = []
+    optimizer = {}
+    scheduler = {}
     learning_rate = lr
 
     model_dir = './result/{}_{}_{}_{}_{}'.format(
@@ -405,11 +359,11 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
 
 
     # Initialize
-    for _ in range(num_car):
+    for index in range(num_car):
         m = copy.deepcopy(global_model).to(device)
-        opt = optim.SGD(params=m.parameters(), lr=learning_rate)
-        model_list.append(m)
-        optimizer_list.append(opt)
+        model.append(m)
+        optimizer[index] = optim.SGD(params=model[index].parameters(), lr=learning_rate)
+        scheduler[index] = ReduceLROnPlateau(optimizer[index], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
         acc_global.append([])
         acc_global_before_aggregation.append([])
         class_acc_list.append([])
@@ -421,43 +375,37 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
         print('==================================================================')
         print('Round:', i)
 
-        # Decay LR manually
-        if i > 0 and i % decay_round == 0:
-            learning_rate = learning_rate / 10
-        for opt in optimizer_list:
-            change_learning_rate(opt, learning_rate)
-
-        for param_group in optimizer_list[0].param_groups:
+        for param_group in optimizer[0].param_groups:
             print("Current LR =", param_group['lr'])
 
         with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
             file.write(f'Round: {i}\n')
-            for param_group in optimizer_list[0].param_groups:
+            for param_group in optimizer[0].param_groups:
                 file.write('Current LR = {}\n'.format(param_group['lr']))
 
         start_time = time.time()
 
         # Local training
         for idx in range(num_car):
-            normal_training_process(model_list[idx], optimizer_list[idx],
+            normal_training_process(model[idx], optimizer[idx],
                                     train_loader[idx], local_ep, loss_list[idx])
 
         # Evaluate all models BEFORE aggregation
-        model_before_aggregation = copy.deepcopy(model_list)
+        model_before_aggregation = copy.deepcopy(model)
         final_test(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation)
 
         # Pairwise model exchange
         # pair[i] is a list of (a, b) pairs that meet in round i
         for (a, b) in pair[i]:
-            weighted_average_process(model_list[a], model_list[b],
+            weighted_average_process(model[a], model[b],
                                      np.array([weights[a], weights[b]]))
-            model_list[a].to(device)
-            model_list[b].to(device)
+            model[a].to(device)
+            model[b].to(device)
 
         end_time = time.time()
 
         # Evaluate all models AFTER aggregation
-        final_test(model_list, acc_global, class_acc_list)
+        final_test(model, acc_global, class_acc_list)
 
         print(f'{end_time - start_time:.2f} seconds for this round')
         print('Before/After aggregation acc:')
@@ -471,6 +419,10 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
         avg_acc = np.average(acc_global, axis=0)[-1]
         print('Average test acc:', avg_acc)
         print('Pairs in this round:', pair[i])
+
+        # update LR
+        for index in range(num_car):
+            scheduler[index].step(avg_acc)
 
         # Logging
         with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
@@ -505,13 +457,14 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
     """
     Decentralized FL with a model cache that can hold up to 'cache_size' models for each node.
     """
-    model_list = []
+    model = []
     local_cache = []
     acc_global = []
     class_acc_list = []
     acc_local = []
     loss_list = []
-    optimizer_list = []
+    optimizer = {}
+    scheduler = {}
     learning_rate = lr
 
     # Example table if you need freshness metrics, etc.
@@ -526,9 +479,10 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
 
     # Init
     for i in range(num_car):
-        model_list.append(copy.deepcopy(global_model).to(device))
+        model.append(copy.deepcopy(global_model).to(device))
         local_cache.append({})
-        optimizer_list.append(optim.SGD(params=model_list[i].parameters(), lr=lr))
+        optimizer[i] = optim.SGD(params=model[j].parameters(), lr=learning_rate)
+        scheduler[i] = ReduceLROnPlateau(optimizer[j], mode='max', factor=args.lr_factor, patience=args.lr_patience, verbose=False)
         acc_global.append([])
         class_acc_list.append([])
         acc_local.append([])
@@ -538,28 +492,22 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
         print('==================================================================')
         print('Round:', i)
 
-        # LR decay
-        if i > 0 and i % decay_round == 0:
-            learning_rate = learning_rate / 10
-        for opt in optimizer_list:
-            change_learning_rate(opt, learning_rate)
-
-        for param_group in optimizer_list[0].param_groups:
+        for param_group in optimizer[0].param_groups:
             print("Current LR =", param_group['lr'])
         with open(os.path.join(model_dir, 'log.txt'), 'a') as file:
             file.write(f'Round: {i}\n')
-            for param_group in optimizer_list[0].param_groups:
+            for param_group in optimizer[0].param_groups:
                 file.write('Current LR = {}\n'.format(param_group['lr']))
 
         start_time = time.time()
 
         # Local training for each car
         for index in range(num_car):
-            normal_training_process(model_list[index], optimizer_list[index],
+            normal_training_process(model[index], optimizer[index],
                                     train_loader[index], local_ep, loss_list[index])
             fresh_class_time_table[index][index] = i
 
-        model_before_training = copy.deepcopy(model_list)
+        model_before_training = copy.deepcopy(model)
 
         # Exchange caches over each second in the round
         for seconds in range(args.epoch_time):
@@ -570,12 +518,12 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
 
         # After exchanging, do cache-based model aggregation
         for index in range(num_car):
-            model_list[index] = cache_average_process(model_list[index], index, i,
+            model[index] = cache_average_process(model[index], index, i,
                                                       local_cache[index], weights)
-            model_list[index].to(device)
+            model[index].to(device)
 
         # Evaluate
-        final_test(model_list, acc_global, class_acc_list)
+        final_test(model, acc_global, class_acc_list)
         end_time = time.time()
 
         # Logging / prints
@@ -620,11 +568,6 @@ def Decentralized_Cache_test_area():
     acc_local = []
     loss = []
     optimizer = []
-    # fresh_class_time_table = np.zeros([num_car,num_car])
-    # fresh_history = np.zeros([num_car,num_round])
-    # current_model_time_table = np.zeros(num_car)
-    # current_model_combination_table = np.eye(num_car)#statistic_data#
-    # current_class_test = np.zeros([num_car,10])
     model_dir = './result/test/taxi'
     pair,area = write_info(model_dir)
 
@@ -640,36 +583,10 @@ def Decentralized_Cache_test_area():
         loss.append([])
     cache_info_dynamic = np.ones([num_car])
     for i in range(num_round):
-        # old_model = copy.deepcopy(model)
         # print('######################################################################')
         print('This is the round:',i)
         for ep in range(local_ep):
             start_time = time.time()
-            #carry out local training
-            # for index in range(num_car):
-                    # normal_training_process(model[index],optimizer[index],train_loader,test_loader,local_ep,index,loss[index],acc_global[index],acc_local[index],model_dir)
-                    # fresh_class_time_table[index][index] = i
-                    #print(model[a].state_dict()['fc4.bias'])
-                        #meet with each other:
-                #print(model[a].state_dict()['fc4.bias'])
-                
-            # #update time table by decay parameter alpha
-            # fresh_class_time_table = alpha_time*i + (1- alpha_time)*fresh_class_time_table
-            #update fresh table
-            
-            # current_model_time_table = alpha_time*i+(1-alpha_time)*current_model_time_table
-            # current_model_combination_table = alpha_combination*statistic_data + (1-alpha_combination)*current_model_combination_table## 
-            # for index in range(num_car):
-                # model[index].load_state_dict(torch.load(model_dir+'/model_'+str(index)+'.pt'))
-            # model_before_aggregation = copy.deepcopy(model)
-            # final_test(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation)
-            # print(acc_global_before_aggregation[a][-1])
-            
-            
-            # #First put self model in own cache
-            # for index in range(num_car):
-            #     put_own_model_into_cache(local_cache, model,index,i)
-            #information exchange: update trace, cache, diag_fisher_matrix
             
             model_before_training = copy.deepcopy(model)
             if kick_out == True:
@@ -680,18 +597,6 @@ def Decentralized_Cache_test_area():
                 for a,b in pair[i*args.epoch_time+seconds]: 
                     if car_type_list[a] == car_type_list[b] or car_type_list[a] == 0 or car_type_list[b] == 0: 
                         update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
-                    # if car_type_list[a] == car_type_list[b]: 
-                    #     if car_type_list[a] != 0:
-                    #         update_model_cache_car_to_car_p(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out,car_type_list, type_limits_car)
-                    #     else:
-                    #         update_model_cache_taxi_to_taxi_p(local_cache, a,b,i, cache_size, kick_out,car_type_list,type_limits_taxi)
-                    # elif car_type_list[a] == 0:
-                    #     update_model_cache_car_to_taxi_p(local_cache, model_before_training[b],b,a,i, cache_size, cache_size, kick_out,car_type_list,type_limits_car,type_limits_taxi)
-                    # elif car_type_list[b] == 0:
-                    #     update_model_cache_car_to_taxi_p(local_cache, model_before_training[a],a,b,i, cache_size, cache_size, kick_out,car_type_list,type_limits_car,type_limits_taxi)
-                    # update_model_cache_distribution(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, args.kick_out,statistic_data,max_std,0.9)
-            # for key in local_cache[0]:
-            #     print(key,local_cache[0][key]['time'],local_cache[0][key]['distribution'],local_cache[0][key]['cache_score'])
             cache_info = np.zeros([num_car])
             for index in range(num_car):
                 # cache_info_by_time[0][index] += 1 
@@ -709,98 +614,11 @@ def Decentralized_Cache_test_area():
             with open(model_dir+'/cache_age_cache_num_'+str('cache' )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
                 file.write(str(i)+':')
                 file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
-            # with open(model_dir+'/cache_info.txt','a') as file:
-            #     file.write('This is the round:'+str(i)+'\n')
-            #     file.write(str(cache_info)+'\n')
 
 
-            ################### code to test cache info
-            # if balance == True:
-            #     for a,b in pair[i]: 
-            #         cache_info_dynamic = update_model_cache_global(local_cache,  model[a],model[b],a,b,i,cache_size, cache_info_dynamic,kick_out)
-                    
-            #     if kick_out == True:
-            #         for index in range(num_car):
-            #             local_cache[index],cache_info_dynamic = kick_out_timeout_model_cache_info(local_cache[index],i-cache_size, cache_info_dynamic)
-            #     with open(model_dir+'/cache_info_dynamic.txt','a') as file:
-            #         file.write('This is the round:'+str(i)+'\n')
-            #         file.write(str(cache_info_dynamic)+'\n')
-            # else:
-            #     for a,b in pair[i]: 
-            #         # update_model_cache_fresh(local_cache, model,a,b,i, cache_size, fresh_class_time_table,metric)
-            #         update_model_cache(local_cache,  model[a],model[b],a,b,i, cache_size, kick_out)
-            #         # update_model_cache_only_one(local_cache,model, a,b,i,cache_size)
-            #     if kick_out == True:
-            #         for index in range(num_car):
-            #             local_cache[index] = kick_out_timeout_model(local_cache[index],i-cache_size)
-
-
-        
-            #     cache_info = np.zeros([num_car])
-            #     for index in range(num_car):
-            #         # cache_info_by_time[0][index] += 1 
-            #         cache_info[index] += 1
-            #         for key in local_cache[index]:
-            #             # print(local_cache[index][key]['time'])
-            #             cache_info[key] += 1
-            #             # cache_info_by_time[i-local_cache[index][key]['time']][key] += 1 
-            #     # print('cache_info:',cache_info)
-            #     with open(model_dir+'/cache_info.txt','a') as file:
-            #         file.write('This is the round:'+str(i)+'\n')
-            #         file.write(str(cache_info)+'\n')
-            
-        
-        # with open(model_dir+'/cache_info_by_time.txt','a') as file:
-        #     file.write('This is the round:'+str(i)+'\n')
-        #     for info in cache_info_by_time:
-        #         file.write(str(info)+'\n')
-        # do model aggregation
-        # print('Updated/aggregated model time/combination:')
-        # for index in range(num_car):
-        #     fresh_class_time_table[index] = cache_average_process_fresh_without_model(local_cache[index], fresh_class_time_table[index],aggregation_metric)
         end_time = time.time()
         
-        # update model property
-        
-        # print(current_model_combination_table)
-                #print('doing aggregate')
-                #print(model[a].state_dict()['fc4.bias'])
-    #final test acc:
-        
-        # final_test(model, acc_global, class_acc_list)
-        # for index in range(num_car):
-        #     current_class_test[index] = class_acc_list[index][-1]
-        # print(current_model_combination_table)
-        # print(current_class_test)
-        # print(fresh_class_time_table)
-        # for index in range(num_car):
-        #     print(class_acc_list[index][-1])
-        # print(f'{end_time-start_time} [sec] for this epoch')
-        # print('Before/After aggregation acc:')
-        # for index in range(num_car):
-        #     print('car:',index,'---------------------------------------------------------------')
-        #     # print(acc_global_before_aggregation[index][-1],acc_global[index][-1])
-        #     # print(class_acc_list_before_aggregation[index][-1])
-        #     # print(class_acc_list[index][-1])
-        #     print('Local Cache model version:')
-        #     for key in local_cache[index]:
-        #         print(key,local_cache[index][key]['time'])
-                
-        # for index in range(num_car):
-        #     if acc_global[index][-1]<acc_global_before_aggregation[index][-1]: 
-        #         model[index] = copy.deepcopy(model_before_aggregation[index])
-        #         acc_global[index][-1] = acc_global_before_aggregation[index][-1]
-        # for a,b in pair[i]:
-        #     if acc_global[a][-1]<acc_global_before_aggregation[a][-1] and acc_global[b][-1]<acc_global_before_aggregation[b][-1]:
-        #         model[b] = copy.deepcopy(model_before_aggregation[b])
-        #         model[a] = copy.deepcopy(model_before_aggregation[a])
-        #         acc_global[a][-1] = acc_global_before_aggregation[a][-1]
-        #         acc_global[b][-1] = acc_global_before_aggregation[b][-1]
-        # print('----------------------------------------------------------------------')
-        # print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        # print('pair:',pair[i])
-        # print('Duration:')
-        # print(duration)
+    
     return loss,[0,0,0],class_acc_list, acc_local 
 
 def Decentralized_Cache_test_area_GB():
@@ -968,7 +786,6 @@ if __name__ == '__main__':
     distribution = args.distribution
     local_ep = args.local_ep
     lr = args.lr
-    decay_round = args.decay_round
     alpha = args.alpha
     batch_size = args.batch_size
     num_round = args.num_round
@@ -977,16 +794,8 @@ if __name__ == '__main__':
     cache_size = args.cache_size
     kick_out = (args.kick_out is not None and args.kick_out > 0)
     data_distribution = distribution
-    use_lr_scheduler = True  # If you want the ReduceLROnPlateau or manual decay
     date_time = datetime.datetime.now()
-    alpha_time = args.alpha_time  # Just to keep consistent with your code
 
-
-    decay_rate = args.decay_rate
-    car_meet_p = args.car_meet_p
-    aggregation_metric = args.aggregation_metric
-    cache_update_metric = args.cache_update_metric
-    sample_size = args.sample_size
     hidden_size = args.hidden_size
     speed = args.speed
     communication_distance = args.communication_distance
@@ -1013,7 +822,6 @@ if __name__ == '__main__':
 
     balance = False
     test_ratio = 0.1
-    use_lr_scheduler = True
     data_distribution = distribution
 
     # If some tasks require typed lists for car_type_list, etc.:
@@ -1038,7 +846,7 @@ if __name__ == '__main__':
                 get_mnist_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
             train_loader, sub_test_loader, test_loader, full_loader = \
-                get_mnist_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
+                get_mnist_non_iid(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
             train_loader, sub_test_loader, test_loader, full_loader = \
                 get_mnist_dirichlet(alpha, num_car, batch_size, test_ratio)
@@ -1055,9 +863,6 @@ if __name__ == '__main__':
             raise ValueError('Unsupported MNIST distribution')
 
     elif task == 'cifar10':
-        # global_model = Cifar10CnnModel()
-        # or:
-        # global_model = AlexNet(10)
         global_model = ResNet18()
         num_class = 10
         if distribution == 'iid':
@@ -1065,7 +870,7 @@ if __name__ == '__main__':
                 get_cifar10_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
             train_loader, sub_test_loader, test_loader, full_loader = \
-                get_cifar10_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
+                get_cifar10_non_iid(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
             train_loader, sub_test_loader, test_loader, full_loader = \
                 get_cifar10_dirichlet(alpha, num_car, batch_size, test_ratio)
@@ -1081,7 +886,7 @@ if __name__ == '__main__':
                 get_fashionmnist_iid(num_car, batch_size, test_ratio)
         elif distribution == 'non-iid':
             train_loader, sub_test_loader, test_loader, full_loader = \
-                get_fashionmnist_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
+                get_fashionmnist_non_iid(args.shards_allocation, num_car, batch_size, test_ratio)
         elif distribution == 'dirichlet':
             train_loader, sub_test_loader, test_loader, full_loader = \
                 get_fashionmnist_dirichlet(alpha, num_car, batch_size, test_ratio)
@@ -1095,22 +900,6 @@ if __name__ == '__main__':
                                            test_ratio, car_area_list, target_labels)
         else:
             raise ValueError('Unsupported FashionMNIST distribution')
-
-    elif task == 'harbox':
-        global_model = DNN_harbox()
-        num_class = 5
-        if distribution == 'iid':
-            train_loader, sub_test_loader, test_loader, full_loader = \
-                get_harbox_iid(num_car, batch_size, test_ratio)
-        elif distribution == 'non-iid':
-            train_loader, sub_test_loader, test_loader, full_loader = \
-                get_harbox_imbalance(args.shards_allocation, num_car, batch_size, test_ratio)
-        elif distribution == 'dirichlet':
-            train_loader, sub_test_loader, test_loader, full_loader = \
-                get_harbox_dirichlet(alpha, num_car, batch_size, test_ratio)
-            data_distribution += f'_{alpha}'
-        else:
-            raise ValueError('Unsupported HARBox distribution')
 
     else:
         raise ValueError('Error: task must be mnist, cifar10, fashionmnist, or harbox')
@@ -1145,19 +934,6 @@ if __name__ == '__main__':
     print("Data similarity (cosine):")
     print(data_similarity)
 
-    # For mixing_table usage in certain caching scenarios:
-    numbers = list(range(num_car))
-    random.shuffle(numbers)
-    mixing_pair = [[] for _ in range(cache_size)]
-    mixing_table = [[] for _ in range(num_car)]
-    for i, val in enumerate(numbers):
-        mixing_pair[i % cache_size].append(val)
-    for slot in range(cache_size):
-        for key in mixing_pair[slot]:
-            mixing_table[key] = slot
-
-    print('Mixing table:', mixing_table)
-    print('Mixing pair:', mixing_pair)
 
     # --------------------------------------------------------------------------------
     # MAIN EXECUTION: choose the algorithm

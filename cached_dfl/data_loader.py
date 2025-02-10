@@ -164,7 +164,7 @@ def get_harbox_iid( num_car, batch_size,test_ratio):
     
     return train_loader, sub_test_loader,full_test_loader, full_loader
 
-def get_harbox_imbalance(shards_allocation_list, num_car,batch_size,test_ratio):
+def get_harbox_non_iid(shards_allocation_list, num_car,batch_size,test_ratio):
     #Harbox
     x_coll, y_coll = load_all_data()
     scaler = StandardScaler()
@@ -321,7 +321,7 @@ def get_fashionmnist_iid( num_car, batch_size,test_ratio):
     
     return train_loader, sub_test_loader,full_test_loader, full_loader
 
-def get_fashionmnist_imbalance(shards_allocation_list, num_car,batch_size,test_ratio):
+def get_fashionmnist_non_iid(shards_allocation_list, num_car,batch_size,test_ratio):
     #MNIST
     data_dir = '../data/'
     apply_transform = transforms.Compose([
@@ -716,7 +716,7 @@ def get_mnist_iid(num_car,batch_size,test_ratio):
 
 
 
-def get_mnist_imbalance(shards_allocation_list, num_car,batch_size,test_ratio):
+def get_mnist_non_iid(shards_allocation_list, num_car,batch_size,test_ratio):
     #MNIST
     data_dir = '../data/'
     apply_transform = transforms.Compose([
@@ -1111,7 +1111,7 @@ def get_cifar10_iid(num_car,batch_size,test_ratio):
     return train_loader, sub_test_loader,full_test_loader, full_loader
 
 
-def get_cifar10_imbalance(shards_allocation_list, num_car,batch_size,test_ratio):
+def get_cifar10_non_iid(shards_allocation_list, num_car,batch_size,test_ratio):
     #Cifar10
     data_dir = '../data/'
     # define transforms
@@ -1286,7 +1286,7 @@ def get_cifar100_iid(num_car,batch_size,test_ratio):
     return train_loader, sub_test_loader,full_test_loader, full_loader
 
 
-def get_cifar100_imbalance(shards_allocation_list, num_car,batch_size,test_ratio):
+def get_cifar100_non_iid(shards_allocation_list, num_car,batch_size,test_ratio):
     #Cifar100
     data_dir = '../data/'
     # define transforms

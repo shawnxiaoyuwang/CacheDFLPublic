@@ -23,6 +23,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 import datetime
 import math
+
 # Local imports
 from cache_algorithm import (
     kick_out_timeout_model,  
@@ -37,11 +38,12 @@ from aggregation import (
     weighted_average_process
 )
 from utils_cnn import test
-from model import CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, ResNet18
+from model import CNNMnist, CNNFashion_Mnist, ResNet18
+
 from data_loader import (
-    get_mnist_iid, get_mnist_area, get_mnist_dirichlet,
-    get_cifar10_iid,  get_cifar10_dirichlet,
-    get_fashionmnist_area, get_fashionmnist_iid,  get_fashionmnist_dirichlet,
+    get_mnist_iid, get_mnist_area, get_mnist_dirichlet, get_mnist_non_iid,
+    get_cifar10_iid,  get_cifar10_dirichlet, get_cifar10_non_iid
+    get_fashionmnist_area, get_fashionmnist_iid,  get_fashionmnist_dirichlet, get_fashionmnist_non_iid
 )
 from road_sim import generate_roadNet_pair_area_list
 import seed_setter
@@ -58,50 +60,26 @@ parser = argparse.ArgumentParser(description="Configure script parameters and se
 # Add arguments
 parser.add_argument("--suffix", type=str, default="", help="Suffix in the folder")
 parser.add_argument("--note", type=str, default="N/A", help="Special_notes")
-# parser.add_argument("--random_seed", type=int, default=10086, help="Random seed")
 parser.add_argument("--task", type=str, choices=[
     'mnist', 'fashionmnist', 'cifar10','cifar100','harbox'], help="Choose dataset task to run")
 parser.add_argument("--local_ep", type=int, default=1, help="Number of local epochs")
 parser.add_argument("--lr", type=float, default=0.1, help="Learning rate")
-parser.add_argument("--decay_rate", type=float, default=0.02, help="Decay rate")
-parser.add_argument("--decay_round", type=int, default=200, help="Decay round")
-parser.add_argument("--car_meet_p", type=float, default=1./9, help="Car meet probability")
-parser.add_argument("--alpha_time", type=float, default=0.01, help="Alpha time")
 parser.add_argument("--alpha", type=float, default=0.5, help="Alpha for Dirchlet distribution, lower alpha increases heterogeneity")
 parser.add_argument("--distribution", type=str, choices=[
     'iid', 'non-iid','dirichlet','area'], help="Choose data distirbution")
-parser.add_argument("--aggregation_metric", type=str, default="mean", help="Aggregation metric")
-parser.add_argument("--cache_update_metric", type=str, default="mean", help="Cache update metric")
 parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
-parser.add_argument("--sample_size", type=int, default=200, help="Sample size")
-parser.add_argument("--hidden_size", type=int, default=200, help="Hidden size")
 parser.add_argument("--num_round", type=int, default=1000, help="Number of rounds")
 parser.add_argument("--early_stop_round", type=int, default=20, help="Number of rounds test accuracy remain unchanged then stop")
 parser.add_argument("--speed", type=float, default=13.59, help="Speed in m/s")
-parser.add_argument("--give_up_cache_round", type=int, default=1000000, help="Set the n-th round to give up cache")
 parser.add_argument("--communication_distance", type=int, default=100, help="Communication distance in meters")
 parser.add_argument("--epoch_time", type=int, default=120, help="Time to finish on epoch in seconds")
 parser.add_argument('--kick_out', type= int, default = 5, help =  'Threshold to kick out in cache')
-parser.add_argument("--update_fraction", type=float, default=0.1, help="Update fraction")
-parser.add_argument("--initial_size", type=int, default=300, help="Initial size for data points per car in by area dynamic change")
-parser.add_argument("--max_size", type=int, default=300, help="Max size for data points per car in by area dynamic change")
-parser.add_argument("--balance_ratio", type=float, default=0.9, help="control the score weights among age and distribution")
-# parser.add_argument("--importance", type=int, default=1, help="Importance")
 parser.add_argument("--num_car", type=int, default=100, help="Number of cars")
-parser.add_argument("--lr_factor", type=float, default=0.1, help="Learning rate factor")
-parser.add_argument("--lr_patience", type=int, default=20, help="Learning rate patience")
+parser.add_argument("--lr_factor", type=float, default=0.1, help="Learning rate factor for ReduceLROnPlateau")
+parser.add_argument("--lr_patience", type=int, default=20, help="Learning rate patience for ReduceLROnPlateau")
 parser.add_argument("--cache_size", type=int, default=3, help="Cache size")
-parser.add_argument("--overlap", type=int, default=0, help="date overlap in taxi area distribution")
+parser.add_argument("--overlap", type=int, default=0, help="date overlap in area distribution")
 parser.add_argument("--test_ratio", type=float, default=1.0, help="ratio to take the subset of the testset for the testing")
-# parser.add_argument("--parallel", action='store_true', help="Enable parallel processing")
-# parser.add_argument('--non-parallel', dest='parallel', action='store_false')
-# parser.set_defaults(parallel=False)
-parser.add_argument("--augment", action='store_true', help="Enable augmentation")
-parser.add_argument('--no-augment', dest='augment', action='store_false')
-parser.set_defaults(augment=True)
-# parser.add_argument("--sample_test", action='store_true', help="Enable augmentation")
-# parser.add_argument('--no-sample_test', dest='augment', action='store_false')
-# parser.set_defaults(sample_test = False)
 parser.add_argument("--shards_allocation", nargs='+', type=int, default=[3,2,1,3,2,1,1,4,1,2]*10, help="Shards allocation")
 parser.add_argument("--County", type=str, default="New York", help="County")
 parser.add_argument("--weighted_aggregation", action='store_true', help="Enable weighted aggregation")
@@ -120,38 +98,24 @@ else:
     test_ratio = None
 local_ep = args.local_ep
 lr = args.lr
-decay_rate = args.decay_rate
-decay_round = args.decay_round
-car_meet_p = args.car_meet_p
-alpha_time = args.alpha_time
 alpha = args.alpha
 distribution = args.distribution
-aggregation_metric = args.aggregation_metric
-cache_update_metric = args.cache_update_metric
 batch_size = args.batch_size
-sample_size = args.sample_size
-hidden_size = args.hidden_size
 num_round = args.num_round
 speed = args.speed
 communication_distance = args.communication_distance
-# importance = args.importance
 early_stop_round = args.early_stop_round
 num_car = args.num_car
 cache_size = args.cache_size
-# parallel = args.parallel
-augment = args.augment
 shards_allocation = args.shards_allocation
 County = args.County
 if args.kick_out > 0:
     kick_out = True
 else:
     kick_out = False
-# SEED = args.random_seed
 suffix = args.suffix
 special_notes = args.note
-update_fraction = args.update_fraction
-initial_size = args.initial_size
-max_size = args.max_size
+
 def write_info(write_dir):
     if not os.path.exists(write_dir):
         os.makedirs(write_dir)
@@ -165,17 +129,11 @@ def write_info(write_dir):
         file.write('Random Seed = '+str(Randomseed)+'\n')
         file.write('local_ep = '+str(local_ep)+'\n')
         file.write('lr = '+str(lr)+'\n')
-        file.write('decay_round = '+str(decay_round)+'\n')
-        file.write('alpha_time = '+str(alpha_time)+'\n')
-        file.write('aggregation_metric = '+str(aggregation_metric)+'\n')
-        file.write('cache_update_metric = '+str( cache_update_metric)+'\n')
         file.write('batch_size = '+str(batch_size)+'\n')
-        file.write('hidden_size = '+str(hidden_size)+'\n')
         file.write('lr_factor = '+str(args.lr_factor)+'\n')
         file.write('lr_patience = '+str(args.lr_patience)+'\n')
         file.write('num_round = '+str(num_round)+'\n')
         file.write('num_car = '+str(args.num_car)+'\n')
-        file.write('give_up_cache_round = '+str(args.give_up_cache_round)+'\n')
         file.write('speed = '+str(speed)+'\n')
         file.write('communication_distance = '+str(communication_distance)+'\n')
         file.write('epoch_time = '+str(args.epoch_time)+'\n')
@@ -189,11 +147,6 @@ def write_info(write_dir):
         file.write('Test size = '+str(len(test_loader.dataset))+'\n')
         file.write('Use ' +str(torch.cuda.device_count())+ 'GPUs!'+'\n')
         file.write('Rank '+str(rank)+ 'uses GPU' +str(device)+'\n')
-        if args.algorithm == 'cache_mixing':
-            file.write('mixing table\n')
-            file.write(str(mixing_table))
-            file.write('mixing pair\n')
-            file.write(str(mixing_pair))
         if distribution == 'area':
             file.write('Car type list:\n')
             file.write(str(car_type_list)+'\n')
@@ -233,30 +186,6 @@ def serialize_model(model):
 # Example: deserialize the byte stream back to a PyTorch model
 def deserialize_model(byte_stream):
     return pickle.loads(byte_stream)
-
-
-def adjust_learning_rate(optimizer, epoch, initial_lr, decay_rate):
-    lr = initial_lr
-    if epoch>0 and epoch % 100 == 0:
-        lr = lr/10
-    # lr = initial_lr / (1 + decay_rate * epoch)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-    return lr
-
-def update_learning_rate(i,learning_rate):
-    flag_for_lr_change = False
-    if i>0 and i % decay_round == 0:
-        learning_rate = learning_rate/10
-        flag_for_lr_change = True
-    return learning_rate, flag_for_lr_change
-
-def clean_up_local_cache(local_cache):
-    return local_cache
-
-def change_learning_rate(optimizer, lr):
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
 
 def final_test(model_list, acc_list,class_acc_list):
     for i in range(len(model_list)):
@@ -457,16 +386,10 @@ def Centralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep):
         print('class acc:', class_acc)
         end_time = time.time()
         print(f'{end_time-start_time} [sec] for this epoch')
-        if use_lr_scheduler:
-            for index in range(1,size):
-                comm.send(acc, dest=index, tag=16)
-            for j in client_rank_mapping[0]:
-                scheduler[j].step(acc)
-        else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                for j in client_rank_mapping[0]:
-                    change_learning_rate(optimizer[j], learning_rate)
+        for index in range(1,size):
+            comm.send(acc, dest=index, tag=16)
+        for j in client_rank_mapping[0]:
+            scheduler[j].step(acc)
         with open(model_dir+'/log.txt','a') as file:
             file.write(f'{end_time-start_time} [sec] for this epoch'+'\n')
             file.write('test acc:'+str(acc)+'\n')
@@ -568,24 +491,15 @@ def Decentralized_process(suffix_dir,train_loader,test_loader,num_round,local_ep
         print('Aggregation time:',time_b-time_a)
         
         mpi_test_host(model, acc_global, class_acc_list,True,model_dir)
-        if use_lr_scheduler:
-            if mpi_train:
-                for index in range(1,size):
-                    comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
-                for j in client_rank_mapping[0]:
-                    scheduler[j].step(np.average(acc_global,axis=0)[-1])
-            else:
-                for index in range(num_car):
-                    scheduler[index].step(np.average(acc_global,axis=0)[-1])
+        #use_lr_scheduler:
+        if mpi_train:
+            for index in range(1,size):
+                comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
+            for j in client_rank_mapping[0]:
+                scheduler[j].step(np.average(acc_global,axis=0)[-1])
         else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                if mpi_train:
-                    for j in client_rank_mapping[0]:
-                        change_learning_rate(optimizer[j], learning_rate)
-                else:
-                    for index in range(num_car):
-                        change_learning_rate(optimizer[index], learning_rate)
+            for index in range(num_car):
+                scheduler[index].step(np.average(acc_global,axis=0)[-1])
         end_time = time.time()
         print('mpi_test time:',end_time-time_b)
         print(f'{end_time-start_time} [sec] for this epoch')
@@ -701,82 +615,61 @@ def Decentralized_Cache_process(suffix_dir,train_loader,test_loader,num_round,lo
         # model_before_aggregation = copy.deepcopy(model)
         
         # mpi_test_host(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation,False,model_dir)
-        if i<args.give_up_cache_round:
-            model_before_training = copy.deepcopy(model)
-            if kick_out == True:
-                for index in range(args.num_car):
-                    local_cache[index] = kick_out_timeout_model(local_cache[index],i-args.kick_out)
+        model_before_training = copy.deepcopy(model)
+        if kick_out == True:
+            for index in range(args.num_car):
+                local_cache[index] = kick_out_timeout_model(local_cache[index],i-args.kick_out)
+            torch.cuda.empty_cache()
+        for seconds in range(args.epoch_time):
+            for a,b in pair[i*args.epoch_time+seconds]: 
+                update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
                 torch.cuda.empty_cache()
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
-                    torch.cuda.empty_cache()
-            #########################
-            #Statistic cache age and cache number
-            cache_age = 0
-            cache_num = 0
-            for index in range(args.num_car):
-                cache_num += len(local_cache[index])
-                for key in local_cache[index]:
-                    cache_age += i-local_cache[index][key]['time']
-            avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
-                file.write(str(i)+':')
-                file.write(str(avg_cache_age)+'\t'+str(cache_num/args.num_car)+'\n')
-            #########################
-            cache_info = np.zeros([args.num_car])
-            for index in range(args.num_car):
-                # cache_info_by_time[0][index] += 1 
-                cache_info[index] += 1
-                for key in local_cache[index]:
-                    # print(local_cache[index][key]['time'])
-                    cache_info[key] += 1
-            with open(model_dir+'/cache_info.txt','a') as file:
-                file.write('This is the round:'+str(i)+'\n')
-                file.write(str(cache_info)+'\n')
-            # do model aggregation
-            print('Updated/aggregated model time/combination:')
-            for index in range(num_car):
-                model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
-        else:
-            receiver_buffer = {}
-            model_before_training = copy.deepcopy(model)
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    receiver_buffer[a] = b
-                    receiver_buffer[b] = a
-            # Then check receiver_buffer, if the model is in the buffer, then do aggregation
-            for key, buffered_model_id in receiver_buffer.items():  
-                model[key].load_state_dict(average_weights([model[key].state_dict(),model_before_training[buffered_model_id].state_dict()],np.array([weights[key],weights[buffered_model_id]])))
-                model[key].to(device)
+        #########################
+        #Statistic cache age and cache number
+        cache_age = 0
+        cache_num = 0
+        for index in range(args.num_car):
+            cache_num += len(local_cache[index])
+            for key in local_cache[index]:
+                cache_age += i-local_cache[index][key]['time']
+        avg_cache_age = cache_age/cache_num
+        with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
+            file.write(str(i)+':')
+            file.write(str(avg_cache_age)+'\t'+str(cache_num/args.num_car)+'\n')
+        #########################
+        cache_info = np.zeros([args.num_car])
+        for index in range(args.num_car):
+            # cache_info_by_time[0][index] += 1 
+            cache_info[index] += 1
+            for key in local_cache[index]:
+                # print(local_cache[index][key]['time'])
+                cache_info[key] += 1
+        with open(model_dir+'/cache_info.txt','a') as file:
+            file.write('This is the round:'+str(i)+'\n')
+            file.write(str(cache_info)+'\n')
+        # do model aggregation
+        print('Updated/aggregated model time/combination:')
+        for index in range(num_car):
+            model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
            
             
         
 
         mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        if use_lr_scheduler:
-            if mpi_train:
-                for index in range(1,size):
-                    comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
-                for j in client_rank_mapping[0]:
-                    scheduler[j].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[j].get_last_lr()[0]
-            else:
-                for index in range(num_car):
-                    scheduler[index].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[index].get_last_lr()[0]
-            if last_lr != new_lr and args.kick_out > 1:
-                # args.kick_out -=1
-                last_lr = new_lr
+        #use_lr_scheduler:
+        if mpi_train:
+            for index in range(1,size):
+                comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
+            for j in client_rank_mapping[0]:
+                scheduler[j].step(np.average(acc_global,axis=0)[-1])
+            new_lr = scheduler[j].get_last_lr()[0]
         else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                if mpi_train:
-                    for j in client_rank_mapping[0]:
-                        change_learning_rate(optimizer[j], learning_rate)
-                else:
-                    for index in range(num_car):
-                        change_learning_rate(optimizer[index], learning_rate)
+            for index in range(num_car):
+                scheduler[index].step(np.average(acc_global,axis=0)[-1])
+            new_lr = scheduler[index].get_last_lr()[0]
+        if last_lr != new_lr and args.kick_out > 1:
+            # args.kick_out -=1
+            last_lr = new_lr
         
         end_time = time.time()
         
@@ -913,93 +806,71 @@ def Decentralized_Cache_areas_process(suffix_dir,train_loader,test_loader,num_ro
         # model_before_aggregation = copy.deepcopy(model)
         
         # mpi_test_host(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation,False,model_dir)
-        if i<args.give_up_cache_round:
-            model_before_training = copy.deepcopy(model)
-            if kick_out == True:
-                for index in range(args.num_car):
-                    local_cache[index] = kick_out_timeout_model(local_cache[index],i-args.kick_out)
+        model_before_training = copy.deepcopy(model)
+        if kick_out == True:
+            for index in range(args.num_car):
+                local_cache[index] = kick_out_timeout_model(local_cache[index],i-args.kick_out)
+            torch.cuda.empty_cache()
+        for seconds in range(args.epoch_time):
+            for a,b in pair[i*args.epoch_time+seconds]: 
+                if car_type_list[a] == car_type_list[b] or car_type_list[a] == 0 or car_type_list[b] == 0: 
+                    update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
+                # if car_type_list[a] == car_type_list[b]: 
+                #     if car_type_list[a] != 0:
+                #         update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
+                #     else:
+                #         update_model_cache_taxi_to_taxi(local_cache, a,b,i, cache_size, kick_out)
+                # elif car_type_list[a] == 0:
+                #     update_model_cache_car_to_taxi(local_cache, model_before_training[b],b,a,i, cache_size, cache_size, kick_out)
+                # elif car_type_list[b] == 0:
+                #     update_model_cache_car_to_taxi(local_cache, model_before_training[a],a,b,i, cache_size, cache_size, kick_out)
                 torch.cuda.empty_cache()
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    if car_type_list[a] == car_type_list[b] or car_type_list[a] == 0 or car_type_list[b] == 0: 
-                        update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
-                    # if car_type_list[a] == car_type_list[b]: 
-                    #     if car_type_list[a] != 0:
-                    #         update_model_cache(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out)
-                    #     else:
-                    #         update_model_cache_taxi_to_taxi(local_cache, a,b,i, cache_size, kick_out)
-                    # elif car_type_list[a] == 0:
-                    #     update_model_cache_car_to_taxi(local_cache, model_before_training[b],b,a,i, cache_size, cache_size, kick_out)
-                    # elif car_type_list[b] == 0:
-                    #     update_model_cache_car_to_taxi(local_cache, model_before_training[a],a,b,i, cache_size, cache_size, kick_out)
-                    torch.cuda.empty_cache()
-            #########################
-            #Statistic cache age and cache number
-            cache_age = 0
-            cache_num = 0
-            for index in range(num_car):
-                cache_num += len(local_cache[index])
-                for key in local_cache[index]:
-                    cache_age += i-local_cache[index][key]['time']
-            avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
-                file.write(str(i)+':')
-                file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
-            #########################
-            cache_info = np.zeros([num_car])
-            for index in range(num_car):
-                # cache_info_by_time[0][index] += 1 
-                cache_info[index] += 1
-                for key in local_cache[index]:
-                    # print(local_cache[index][key]['time'])
-                    cache_info[key] += 1
-            with open(model_dir+'/cache_info.txt','a') as file:
-                file.write('This is the round:'+str(i)+'\n')
-                file.write(str(cache_info)+'\n')
-            # do model aggregation
-            print('Updated/aggregated model time/combination:')
-            for index in range(num_car):
-                model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
-        else:
-            receiver_buffer = {}
-            model_before_training = copy.deepcopy(model)
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    if car_type_list[a] == car_type_list[b] and car_type_list[a] != 0: 
-                        receiver_buffer[a] = b
-                        receiver_buffer[b] = a
-            # Then check receiver_buffer, if the model is in the buffer, then do aggregation
-            for key, buffered_model_id in receiver_buffer.items():  
-                model[key].load_state_dict(average_weights([model[key].state_dict(),model_before_training[buffered_model_id].state_dict()],np.array([weights[key],weights[buffered_model_id]])))
-                model[key].to(device)
+        #########################
+        #Statistic cache age and cache number
+        cache_age = 0
+        cache_num = 0
+        for index in range(num_car):
+            cache_num += len(local_cache[index])
+            for key in local_cache[index]:
+                cache_age += i-local_cache[index][key]['time']
+        avg_cache_age = cache_age/cache_num
+        with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
+            file.write(str(i)+':')
+            file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
+        #########################
+        cache_info = np.zeros([num_car])
+        for index in range(num_car):
+            # cache_info_by_time[0][index] += 1 
+            cache_info[index] += 1
+            for key in local_cache[index]:
+                # print(local_cache[index][key]['time'])
+                cache_info[key] += 1
+        with open(model_dir+'/cache_info.txt','a') as file:
+            file.write('This is the round:'+str(i)+'\n')
+            file.write(str(cache_info)+'\n')
+        # do model aggregation
+        print('Updated/aggregated model time/combination:')
+        for index in range(num_car):
+            model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
            
             
         
 
         mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        if use_lr_scheduler:
-            if mpi_train:
-                for index in range(1,size):
-                    comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
-                for j in client_rank_mapping[0]:
-                    scheduler[j].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[j].get_last_lr()[0]
-            else:
-                for index in range(num_car):
-                    scheduler[index].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[index].get_last_lr()[0]
-            if last_lr != new_lr and args.kick_out > 1:
-                # args.kick_out -=1
-                last_lr = new_lr
+        #use_lr_scheduler:
+        if mpi_train:
+            for index in range(1,size):
+                comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
+            for j in client_rank_mapping[0]:
+                scheduler[j].step(np.average(acc_global,axis=0)[-1])
+            new_lr = scheduler[j].get_last_lr()[0]
         else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                if mpi_train:
-                    for j in client_rank_mapping[0]:
-                        change_learning_rate(optimizer[j], learning_rate)
-                else:
-                    for index in range(num_car):
-                        change_learning_rate(optimizer[index], learning_rate)
+            for index in range(num_car):
+                scheduler[index].step(np.average(acc_global,axis=0)[-1])
+            new_lr = scheduler[index].get_last_lr()[0]
+        if last_lr != new_lr and args.kick_out > 1:
+            # args.kick_out -=1
+            last_lr = new_lr
         
         end_time = time.time()
         
@@ -1136,100 +1007,79 @@ def Decentralized_Cache_areas_GB_process(suffix_dir,train_loader,test_loader,num
         # model_before_aggregation = copy.deepcopy(model)
         
         # mpi_test_host(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation,False,model_dir)
-        if i<args.give_up_cache_round:
-            model_before_training = copy.deepcopy(model)
-            if kick_out == True:
-                for index in range(args.num_car):
-                    if len(local_cache[index])>cache_size:
-                            local_cache[index] = prune_cache(local_cache[index], type_limits_taxi, cache_size,'time','car_type')
-                    # if car_type_list[index] != 0:
-                    #     if len(local_cache[index])>cache_size:
-                    #         local_cache[index] = prune_cache(local_cache[index], type_limits_car, cache_size,'time','from')
-                    # else:
-                    #     if len(local_cache[index])>cache_size:
-                    #         local_cache[index] = prune_cache(local_cache[index], type_limits_taxi, cache_size,'time','car_type')
+        model_before_training = copy.deepcopy(model)
+        if kick_out == True:
+            for index in range(args.num_car):
+                if len(local_cache[index])>cache_size:
+                        local_cache[index] = prune_cache(local_cache[index], type_limits_taxi, cache_size,'time','car_type')
+                # if car_type_list[index] != 0:
+                #     if len(local_cache[index])>cache_size:
+                #         local_cache[index] = prune_cache(local_cache[index], type_limits_car, cache_size,'time','from')
+                # else:
+                #     if len(local_cache[index])>cache_size:
+                #         local_cache[index] = prune_cache(local_cache[index], type_limits_taxi, cache_size,'time','car_type')
+            torch.cuda.empty_cache()
+        for seconds in range(args.epoch_time):
+            for a,b in pair[i*args.epoch_time+seconds]: 
+                if car_type_list[a] == car_type_list[b] or car_type_list[a] == 0 or car_type_list[b] == 0: 
+                    update_model_cache_car_to_car_p(local_cache, model_before_training[a], model_before_training[b],a,b,i, cache_size, kick_out,car_area_list, type_limits_car)
+                # if car_type_list[a] == car_type_list[b]: 
+                #     if car_type_list[a] != 0:
+                #         update_model_cache_car_to_car_p(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out,car_type_list, type_limits_car)
+                #     else:
+                #         update_model_cache_taxi_to_taxi_p(local_cache, a,b, cache_size,type_limits_taxi)
+                # elif car_type_list[a] == 0:
+                #     update_model_cache_car_to_taxi_p(local_cache, model_before_training[b],b,a,i, cache_size, cache_size, kick_out,car_type_list,type_limits_car,type_limits_taxi)
+                # elif car_type_list[b] == 0:
+                #     update_model_cache_car_to_taxi_p(local_cache, model_before_training[a],a,b,i, cache_size, cache_size, kick_out,car_type_list,type_limits_car,type_limits_taxi)
                 torch.cuda.empty_cache()
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    if car_type_list[a] == car_type_list[b] or car_type_list[a] == 0 or car_type_list[b] == 0: 
-                        update_model_cache_car_to_car_p(local_cache, model_before_training[a], model_before_training[b],a,b,i, cache_size, kick_out,car_area_list, type_limits_car)
-                    # if car_type_list[a] == car_type_list[b]: 
-                    #     if car_type_list[a] != 0:
-                    #         update_model_cache_car_to_car_p(local_cache, model_before_training[a],model_before_training[b],a,b,i, cache_size, kick_out,car_type_list, type_limits_car)
-                    #     else:
-                    #         update_model_cache_taxi_to_taxi_p(local_cache, a,b, cache_size,type_limits_taxi)
-                    # elif car_type_list[a] == 0:
-                    #     update_model_cache_car_to_taxi_p(local_cache, model_before_training[b],b,a,i, cache_size, cache_size, kick_out,car_type_list,type_limits_car,type_limits_taxi)
-                    # elif car_type_list[b] == 0:
-                    #     update_model_cache_car_to_taxi_p(local_cache, model_before_training[a],a,b,i, cache_size, cache_size, kick_out,car_type_list,type_limits_car,type_limits_taxi)
-                    torch.cuda.empty_cache()
-            #########################
-            #Statistic cache age and cache number
-            cache_age = 0
-            cache_num = 0
-            for index in range(num_car):
-                cache_num += len(local_cache[index])
-                for key in local_cache[index]:
-                    cache_age += i-local_cache[index][key]['time']
-            avg_cache_age = cache_age/cache_num
-            with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
-                file.write(str(i)+':')
-                file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
-            #########################
-            cache_info = np.zeros([num_car])
-            for index in range(num_car):
-                # cache_info_by_time[0][index] += 1 
-                cache_info[index] += 1
-                for key in local_cache[index]:
-                    # print(local_cache[index][key]['time'])
-                    cache_info[key] += 1
-            with open(model_dir+'/cache_info.txt','a') as file:
-                file.write('This is the round:'+str(i)+'\n')
-                file.write(str(cache_info)+'\n')
-            # do model aggregation
-            print('Updated/aggregated model time/combination:')
-            for index in range(num_car):
-                model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
-        else:
-            receiver_buffer = {}
-            model_before_training = copy.deepcopy(model)
-            for seconds in range(args.epoch_time):
-                for a,b in pair[i*args.epoch_time+seconds]: 
-                    if car_type_list[a] == car_type_list[b] and car_type_list[a] != 0: 
-                        receiver_buffer[a] = b
-                        receiver_buffer[b] = a
-            # Then check receiver_buffer, if the model is in the buffer, then do aggregation
-            for key, buffered_model_id in receiver_buffer.items():  
-                model[key].load_state_dict(average_weights([model[key].state_dict(),model_before_training[buffered_model_id].state_dict()],np.array([weights[key],weights[buffered_model_id]])))
-                model[key].to(device)
+        #########################
+        #Statistic cache age and cache number
+        cache_age = 0
+        cache_num = 0
+        for index in range(num_car):
+            cache_num += len(local_cache[index])
+            for key in local_cache[index]:
+                cache_age += i-local_cache[index][key]['time']
+        avg_cache_age = cache_age/cache_num
+        with open(model_dir+'/cache_age_cache_num_'+str(args.algorithm )+'_'+str(cache_size)+'_'+str(args.epoch_time)+'_'+str(args.kick_out)+'.txt','a') as file:
+            file.write(str(i)+':')
+            file.write(str(avg_cache_age)+'\t'+str(cache_num/num_car)+'\n')
+        #########################
+        cache_info = np.zeros([num_car])
+        for index in range(num_car):
+            # cache_info_by_time[0][index] += 1 
+            cache_info[index] += 1
+            for key in local_cache[index]:
+                # print(local_cache[index][key]['time'])
+                cache_info[key] += 1
+        with open(model_dir+'/cache_info.txt','a') as file:
+            file.write('This is the round:'+str(i)+'\n')
+            file.write(str(cache_info)+'\n')
+        # do model aggregation
+        print('Updated/aggregated model time/combination:')
+        for index in range(num_car):
+            model[index] = cache_average_process(model[index],index,i,local_cache[index],weights)
+        
            
             
         
 
         mpi_test_host(model, acc_global, class_acc_list, True,model_dir)
-        if use_lr_scheduler:
-            if mpi_train:
-                for index in range(1,size):
-                    comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
-                for j in client_rank_mapping[0]:
-                    scheduler[j].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[j].get_last_lr()[0]
-            else:
-                for index in range(num_car):
-                    scheduler[index].step(np.average(acc_global,axis=0)[-1])
-                new_lr = scheduler[index].get_last_lr()[0]
-            if last_lr != new_lr and args.kick_out > 1:
-                # args.kick_out -=1
-                last_lr = new_lr
+        #use_lr_scheduler
+        if mpi_train:
+            for index in range(1,size):
+                comm.send(np.average(acc_global,axis=0)[-1], dest=index, tag=16)
+            for j in client_rank_mapping[0]:
+                scheduler[j].step(np.average(acc_global,axis=0)[-1])
+            new_lr = scheduler[j].get_last_lr()[0]
         else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                if mpi_train:
-                    for j in client_rank_mapping[0]:
-                        change_learning_rate(optimizer[j], learning_rate)
-                else:
-                    for index in range(num_car):
-                        change_learning_rate(optimizer[index], learning_rate)
+            for index in range(num_car):
+                scheduler[index].step(np.average(acc_global,axis=0)[-1])
+            new_lr = scheduler[index].get_last_lr()[0]
+        if last_lr != new_lr and args.kick_out > 1:
+            # args.kick_out -=1
+            last_lr = new_lr
         
         end_time = time.time()
         
@@ -1290,142 +1140,6 @@ def Decentralized_Cache_areas_GB_process(suffix_dir,train_loader,test_loader,num
             break
     return loss,acc_global,class_acc_list, acc_local, model_dir 
 
-def Decentralized_Cache_test(train_loader,test_loader,num_round,local_ep):
-    model = []
-    local_cache = []
-    acc_global = []
-    acc_global_before_aggregation = []
-    class_acc_list = []
-    class_acc_list_before_aggregation = []
-    acc_local = []
-    loss = []
-    optimizer = {}
-    learning_rate = lr
-    fresh_class_time_table = np.zeros([num_car,num_car])
-    fresh_history = np.zeros([num_car,num_round])
-    # current_model_time_table = np.zeros(num_car)
-    # current_model_combination_table = np.eye(num_car)#statistic_data#
-    current_class_test = np.zeros([num_car,10])
-    # model_dir = 'dfl_model_cache'
-    for i in range(num_car):
-        local_cache.append({})
-        model.append(copy.deepcopy(global_model))
-        optimizer.append(optim.SGD(params=model[i].parameters(), lr=lr))
-        acc_global.append([])
-        acc_global_before_aggregation.append([])
-        class_acc_list.append([])
-        class_acc_list_before_aggregation.append([])
-        acc_local.append([])
-        loss.append([])
-    if mpi_train:
-        for j in client_rank_mapping[0]:
-            optimizer[j] = optim.SGD(params=model[j].parameters(), lr=learning_rate)
-    else:
-        for index in range(num_car):
-            optimizer[index] = optim.SGD(params=model[index].parameters(), lr=learning_rate)
-    # mpi_send_model_host(model)
-    for i in range(num_round):
-        print('######################################################################')
-        print('This is the round:',i)
-        # print('lr:',learning_rate)
-        learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-        if flag_lr:
-            if mpi_train:
-                for j in client_rank_mapping[0]:
-                    change_learning_rate(optimizer[j], learning_rate)
-            else:
-                for index in range(num_car):
-                    change_learning_rate(optimizer[index], learning_rate)
-        for param_group in optimizer[client_rank_mapping[0][0]].param_groups:
-            print(param_group['lr'])
-
-        start_time = time.time()
-        #carry out local training
-        for index in range(num_car):
-                # normal_training_process(model[index],optimizer[index],train_loader[index],local_ep,loss[index])
-                fresh_class_time_table[index][index] = i
-                #print(model[a].state_dict()['fc4.bias'])
-                    #meet with each other:
-            #print(model[a].state_dict()['fc4.bias'])
-            
-        # #update time table by decay parameter alpha
-        # fresh_class_time_table = alpha_time*i + (1- alpha_time)*fresh_class_time_table
-        #update fresh table
-        
-        # current_model_time_table = alpha_time*i+(1-alpha_time)*current_model_time_table
-        # current_model_combination_table = alpha_combination*statistic_data + (1-alpha_combination)*current_model_combination_table## 
-        # for index in range(num_car):
-            # model[index].load_state_dict(torch.load(model_dir+'/model_'+str(index)+'.pt'))
-        # model_before_aggregation = copy.deepcopy(model)
-        # final_test(model_before_aggregation, acc_global_before_aggregation, class_acc_list_before_aggregation)
-        # print(acc_global_before_aggregation[a][-1])
-        
-        
-        # #First put self model in own cache
-        # for index in range(num_car):
-        #     put_own_model_into_cache(local_cache, model,index,i)
-        #information exchange: update trace, cache, diag_fisher_matrix
-        
-        for a,b in pair[i]: 
-            update_model_cache_fresh(local_cache, model[a],model[b],a,b,i, cache_size, fresh_class_time_table, cache_update_metric, kick_out)
-            # update_model_cache(local_cache, model,a,b,i, cache_size, kick_out)
-            # update_model_cache_only_one(local_cache,model, a,b,i,cache_size)
-        for index in range(num_car):
-            if cache_update_metric =='mean':
-                fresh_history[index][i] = fresh_class_time_table[index].mean()
-            elif cache_update_metric == 'min':
-                fresh_history[index][i] = fresh_class_time_table[index].min()
-        
-        # do model aggregation
-        print('Updated/aggregated model time/combination:')
-        for index in range(num_car):
-            fresh_class_time_table[index] = cache_average_process_fresh_without_model(local_cache[index], fresh_class_time_table[index],aggregation_metric)
-        end_time = time.time()
-        
-        # update model property
-        
-        # print(current_model_combination_table)
-                #print('doing aggregate')
-                #print(model[a].state_dict()['fc4.bias'])
-    #final test acc:
-        
-        # final_test(model, acc_global, class_acc_list)
-        # for index in range(num_car):
-        #     current_class_test[index] = class_acc_list[index][-1]
-        # print(current_model_combination_table)
-        # print(current_class_test)
-        print(fresh_class_time_table)
-        # for index in range(num_car):
-        #     print(class_acc_list[index][-1])
-        print(f'{end_time-start_time} [sec] for this epoch')
-        print('Before/After aggregation acc:')
-        for index in range(num_car):
-            print('car:',index,'---------------------------------------------------------------')
-            # print(acc_global_before_aggregation[index][-1],acc_global[index][-1])
-            # print(class_acc_list_before_aggregation[index][-1])
-            # print(class_acc_list[index][-1])
-            print('Local Cache model version:')
-            for key in local_cache[index]:
-                print(key,local_cache[index][key]['time'],local_cache[index][key]['fresh_metric'])
-                
-        # for index in range(num_car):
-        #     if acc_global[index][-1]<acc_global_before_aggregation[index][-1]: 
-        #         model[index] = copy.deepcopy(model_before_aggregation[index])
-        #         acc_global[index][-1] = acc_global_before_aggregation[index][-1]
-        # for a,b in pair[i]:
-        #     if acc_global[a][-1]<acc_global_before_aggregation[a][-1] and acc_global[b][-1]<acc_global_before_aggregation[b][-1]:
-        #         model[b] = copy.deepcopy(model_before_aggregation[b])
-        #         model[a] = copy.deepcopy(model_before_aggregation[a])
-        #         acc_global[a][-1] = acc_global_before_aggregation[a][-1]
-        #         acc_global[b][-1] = acc_global_before_aggregation[b][-1]
-        print('----------------------------------------------------------------------')
-        # print('Average test acc:',np.average(acc_global,axis=0)[-1])
-        # print('Variance test acc:',np.var(acc_global,axis=0)[-1])
-        print('pair:',pair[i])
-        # print('Duration:')
-        # print(duration)
-    return loss,[0,0,0],class_acc_list, acc_local , fresh_history
-
 def ml_process(suffix_dir,train_loader, num_round,local_ep):
     model = copy.deepcopy(global_model)
     acc = []
@@ -1450,12 +1164,8 @@ def ml_process(suffix_dir,train_loader, num_round,local_ep):
             loss.append(normal_train(model, optimizer, full_loader))
         current_acc, class_acc = test(model, test_loader,num_class)
         acc.append(current_acc) 
-        if use_lr_scheduler:
-            scheduler.step(current_acc)
-        else:
-            learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-            if flag_lr:
-                change_learning_rate(optimizer, learning_rate)
+        #use_lr_scheduler:
+        scheduler.step(current_acc)
         end_time = time.time()
         print(f'{end_time-start_time} [sec] for this epoch')
         print('Acc:',current_acc)
@@ -1479,7 +1189,6 @@ def ml_process(suffix_dir,train_loader, num_round,local_ep):
 
 
 if __name__ == '__main__':
-    use_lr_scheduler = True
     mpi_train = True
     high_IO = False
     async_comm = False
@@ -1520,7 +1229,7 @@ if __name__ == '__main__':
             if distribution == 'iid':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_iid(num_car,batch_size,test_ratio)
             elif distribution == 'non-iid':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_imbalance(shards_allocation, num_car, batch_size,test_ratio)
+                train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_non_iid(shards_allocation, num_car, batch_size,test_ratio)
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_mnist_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
@@ -1542,31 +1251,26 @@ if __name__ == '__main__':
             else:
                 raise ValueError('Error')
         elif task == 'cifar10':
-            # global_model = Cifar10CnnModel()
-            # global_model = AlexNet(10)
             num_class = 10
             global_model = ResNet18()
             # cifar10
             if distribution == 'iid':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_iid(num_car,batch_size,test_ratio)
             elif distribution == 'non-iid':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_imbalance(shards_allocation, num_car, batch_size,test_ratio)
+                train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_non_iid(shards_allocation, num_car, batch_size,test_ratio)
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_cifar10_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
             else:
                 raise ValueError('Error')
         elif task == 'cifar100':
-            # global_model = Cifar10CnnModel()
-            # global_model = AlexNet(10)
             num_class = 100
             global_model = ResNet18(num_classes=num_class)
-            # global_model = VGG('VGG19')
             # cifar100
             if distribution == 'iid':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_cifar100_iid(num_car,batch_size,test_ratio)
             elif distribution == 'non-iid':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_cifar100_imbalance(shards_allocation, num_car, batch_size,test_ratio)
+                train_loader, sub_test_loader, test_loader, full_loader =  get_cifar100_non_iid(shards_allocation, num_car, batch_size,test_ratio)
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_cifar100_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
@@ -1576,11 +1280,10 @@ if __name__ == '__main__':
             global_model = CNNFashion_Mnist()
             # FashionMNIST
             num_class = 10
-            # train_loader, test_loader, full_loader =  get_fashionmnist_dataset_iid(shards_per_user, num_car)
             if distribution == 'iid':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_iid(num_car,batch_size,test_ratio)
             elif distribution == 'non-iid':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_imbalance(shards_allocation, num_car, batch_size,test_ratio)
+                train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_non_iid(shards_allocation, num_car, batch_size,test_ratio)
             elif distribution == 'dirichlet':
                 train_loader, sub_test_loader, test_loader, full_loader =  get_fashionmnist_dirichlet(alpha, num_car,batch_size,test_ratio)
                 data_distribution = data_distribution+'_'+str(alpha)
@@ -1601,23 +1304,8 @@ if __name__ == '__main__':
                 data_distribution = distribution+'_'+str(args.overlap)+'_overlap'
             else:
                 raise ValueError('Error')
-        elif task == 'harbox':
-            global_model = DNN_harbox()
-            # FashionMNIST
-            num_class = 5
-            # train_loader, test_loader, full_loader =  get_fashionmnist_dataset_iid(shards_per_user, num_car)
-            if distribution == 'iid':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_harbox_iid(num_car,batch_size,test_ratio)
-            elif distribution == 'non-iid':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_harbox_imbalance(shards_allocation, num_car, batch_size,test_ratio)
-            elif distribution == 'dirichlet':
-                train_loader, sub_test_loader, test_loader, full_loader =  get_harbox_dirichlet(alpha, num_car,batch_size,test_ratio)
-                data_distribution = data_distribution+'_'+str(alpha)
-            else:
-                raise ValueError('Error')
         else:
             raise ValueError('Error')
-        # global_model = AlexNet(num_classes=10)
         
         
         if test_ratio:
@@ -1684,20 +1372,6 @@ if __name__ == '__main__':
         
         numbers = list(range(num_car))
         random.shuffle(numbers)
-
-        if args.algorithm == 'cache_mixing':
-            mixing_pair = []
-            mixing_table = []
-            for i in range(cache_size):
-                mixing_pair.append([])
-            for i in range(num_car):
-                mixing_pair[i%cache_size].append(numbers[i])
-                mixing_table.append([])
-            for slot in range(cache_size):
-                for key in mixing_pair[slot]:
-                    mixing_table[key] = slot
-            print('mixing table',mixing_table)
-            print('mixing pair',mixing_pair)
         
         numbers = list(range(num_car))
         pair = []
@@ -1864,15 +1538,10 @@ if __name__ == '__main__':
             #change the learning rate
             if args.algorithm != 'cfl':
                 mpi_test_rank(model_group,True)
-            if use_lr_scheduler:
-                acc = comm.recv(source = 0, tag = 16)
-                for index in range(num_client):
-                    scheduler[index].step(acc)
-            else:
-                learning_rate, flag_lr = update_learning_rate(i, learning_rate)
-                if flag_lr:
-                    for index in range(num_client):
-                        change_learning_rate(optimizer[index], learning_rate)
+            #use_lr_scheduler:
+            acc = comm.recv(source = 0, tag = 16)
+            for index in range(num_client):
+                scheduler[index].step(acc)
     else:
         # Worker processes
         # Initialization
