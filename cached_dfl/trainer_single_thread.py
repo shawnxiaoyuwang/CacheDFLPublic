@@ -19,27 +19,23 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 
 # Local imports
 from cache_algorithm import (
-    kick_out_timeout_model, kick_out_timeout_model_list, update_model_cache_mixing,
-    update_model_cache_car_to_car_p, prune_cache, update_model_cache_car_to_taxi_p,
+    kick_out_timeout_model,  
+    update_model_cache_car_to_car_p,  update_model_cache_car_to_taxi_p,
     update_model_cache_taxi_to_taxi_p, update_model_cache_car_to_taxi, update_model_cache_taxi_to_taxi,
-    update_model_cache_distribution, update_model_cache_global, kick_out_timeout_model_cache_info,
-    update_model_cache_fresh, cache_average_process, cache_average_process_fresh,
-    cache_average_process_mixing, update_model_cache, duration_in_future, update_model_cache_only_one,
-    weighted_cache_average_process, update_best_model_cache, cache_average_process_fresh_without_model,
-    update_model_cache_fresh_count, update_model_cache_fresh_v3, cache_average_process_fresh_v3
+    update_model_cache_global, kick_out_timeout_model_cache_info,
+    cache_average_process, 
+    update_model_cache, update_model_cache_only_one,
 )
 from aggregation import (
-    average_weights, normal_training_process, average_process, normal_train,
-    subgradient_push_process, weighted_average_process
+    average_weights, normal_training_process, normal_train,
+    weighted_average_process
 )
 from utils_cnn import test
-from model import get_P_matrix, CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, AlexNet, DNN_harbox, ResNet18
+from model import CNNMnist, Cifar10CnnModel, CNNFashion_Mnist, ResNet18
 from data_loader import (
-    get_mnist_iid, get_mnist_area, get_mnist_imbalance, get_mnist_dirichlet,
-    initial_mnist, update_training_subset, get_dataloader_by_indices, initial_training_subset,
-    get_cifar10_iid, get_cifar10_imbalance, get_cifar10_dirichlet,
-    get_fashionmnist_area, get_fashionmnist_iid, get_fashionmnist_imbalance, get_fashionmnist_dirichlet,
-    get_harbox_iid, get_harbox_imbalance, get_harbox_dirichlet
+    get_mnist_iid, get_mnist_area, get_mnist_dirichlet,
+    get_cifar10_iid,  get_cifar10_dirichlet,
+    get_fashionmnist_area, get_fashionmnist_iid,  get_fashionmnist_dirichlet,
 )
 from road_sim import generate_roadNet_pair_area_list
 import seed_setter
